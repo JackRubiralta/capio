@@ -1,0 +1,5599 @@
+# Capio documentation
+
+Capio is a **declarative, explicit, first-class** language.
+
+- **First-class:** everything is a value. Numbers, arrays, maps, functions, structs and
+  even types are all declared, stored, passed and returned the same way.
+- **Explicit:** reading the code tells you what happens. A value goes on the heap only when
+  its type says `^`, it is shared only when you write `&`, and it changes owner only where
+  you write `@`. Otherwise every value is copied when it's declared, assigned or passed.
+- **Declarative:** every name is declared in one shape that states what kind of name it
+  is, what it's called, what type it has and what value it starts with. There are no loops:
+  repeating is a function calling itself. A choice is a lookup.
+
+The name is Latin: *capio* means "I take, I hold, I understand". In Capio a value changes owner
+only where the code takes it, it is held by one owner at a time, and reading the code is enough
+to understand what happens to it.
+
+This file documents the language: values, names, types, arrays, maps, functions, ownership
+(the heap, borrowing and moving), structs, choosing and repeating, and the program as a whole.
+The philosophy behind it, and why each rule is the way it is, are in `DECISIONS.md`.
+
+**How settled each rule is.** A rule with no mark is decided. **(needs review)** marks a rule
+that was filled in to complete the design and still needs looking over. **(adjusted)** marks a
+decided rule that was changed to fit the rest, and the change still needs looking over. A mark
+in a heading covers the whole section. A mark at the start of a paragraph covers that paragraph
+and the examples, lists and tables that follow it, up to the next paragraph. A mark inside a
+paragraph covers the sentence it stands in and what follows, up to the next mark or the end of
+the paragraph. A mark in a table covers its row or its cell, and a mark in a comment covers its
+line. `FILLED_IN.md` lists every marked rule with its reason.
+
+**Reading the examples**
+
+- Code blocks are marked `go` only for colouring. The code is Capio.
+- Most examples use `int`, `float` and `bool`. Every built-in type is listed in 3.1.
+- `//` starts a comment.
+- `// ERROR` marks a line the compiler rejects.
+- `...` stands for code that's left out.
+- **(needs review)** A line that ends without a `;` is not a statement. It shows a value being
+  used, often with a comment that says what the value is, as in `add(1, 2)              // 3`.
+  Such a line can stand anywhere in an example, also inside a body.
+- **(needs review)** Each example is its own piece of code. It can use names that other examples
+  declare: usually the nearest one above it, and otherwise a comment or a note beside the
+  example says where the name comes from. It can also declare a name again that an earlier
+  example declared. In a real program that second declaration would be an error (2.8). A line
+  marked `// ERROR` declares nothing, and neither does code that is introduced as a picture of
+  what a value is underneath.
+
+## Contents
+
+1. [Everything is a first-class value](#1-everything-is-a-first-class-value)
+2. [Names and declarations](#2-names-and-declarations)
+3. [Types](#3-types)
+4. [Types are values](#4-types-are-values)
+5. [Arrays](#5-arrays)
+6. [Maps](#6-maps)
+7. [Functions](#7-functions)
+8. [Ownership: plain, heap and borrowed values](#8-ownership-plain-heap-and-borrowed-values)
+9. [Structs](#9-structs)
+10. [Choosing and repeating](#10-choosing-and-repeating)
+11. [A program is one file](#11-a-program-is-one-file)
+12. [Putting it together](#12-putting-it-together)
+13. [Quick reference](#13-quick-reference)
+
+Two appendices **(needs review)**:
+
+- [Appendix A: The full grammar](#appendix-a-the-full-grammar-needs-review)
+- [Appendix B: Every check](#appendix-b-every-check-needs-review)
+
+---
+
+## 1. Everything is a first-class value
+
+Functions, arrays, maps, structs and types are values, exactly like numbers. Any value
+can be:
+
+| You can… | Example |
+|---|---|
+| give it a name | `const add: (int, int)int = …;` |
+| put it in an array | `const ops: [2](int, int)int = [add, sub];` |
+| put it in a map | `const byKey: {int}(int, int)int = {1: add, 2: sub};` |
+| pass it to a function | `twice(double, 3)` |
+| return it from a function | `return f;` |
+
+There are no special cases. An array of functions, a map of arrays and a function that
+returns a function all use the same rules, applied again.
+
+---
+
+## 2. Names and declarations
+
+### 2.1 One shape for every declaration
+
+```go
+kind name: Type = value;
+```
+
+| Part | What it says |
+|---|---|
+| `kind` | what sort of name it is: `const` or `var` |
+| `name` | the name |
+| `Type` | what the value is (section 3) |
+| `value` | the value it starts with |
+
+```go
+const limit: int = 10;
+var count: int = 3;
+const add: (int, int)int = (const x: int, const y: int){ return x + y; };
+const scores: [3]int = [10, 20, 30];
+```
+
+A number, a function and an array are all declared the same way.
+
+One mark can go in front of the name: `@`, when the declaration takes a value over from
+another variable, as in `var @q: ^int = @p;` (8.9).
+
+### 2.2 The two kinds of name
+
+| Kind | Can it be given a new value? |
+|---|---|
+| `const` | no |
+| `var` | yes |
+
+Where a value lives and who owns it is not a kind of name. It is part of the type
+(section 8).
+
+### 2.3 `const` and `var`
+
+A `const` keeps the value it's declared with. A `var` can be given a new value of the same
+type as often as you like:
+
+```go
+const limit: int = 10;
+limit = 11;                // ERROR: limit is const
+
+var count: int = 3;
+count = 4;                 // fine: count is var
+count = 5;                 // and again
+```
+
+### 2.4 Declaring makes a new value
+
+A declaration always gets its own value, a copy of what it's given:
+
+```go
+var a: int = 3;
+var b: int = a;            // b is a new value, a copy of a
+b = 7;                     // a is still 3
+```
+
+This holds for every type. Declaring an array, a map, a function or a struct from another
+one copies the whole value:
+
+```go
+var first: [3]int = [1, 2, 3];
+var second: [3]int = first;    // a copy of all three elements
+second[0] = 9;                 // first is still [1, 2, 3]
+```
+
+To use the *same* value instead of a copy, borrow it with `&` (section 8).
+
+### 2.5 Statements end with `;`
+
+Every statement ends with `;`, including a declaration whose value is a function body or
+a struct block:
+
+```go
+const add: (int, int)int = (const x: int, const y: int){
+    return x + y;
+};                         // the ; ends the declaration
+```
+
+### 2.6 Where values live, and for how long
+
+Every value lives on the stack, unless its type says `^`, which puts it on the heap
+(section 8). A value on the stack has a fixed size, which is why the length of an array
+(5.3) and the keys of a map (6.3) never change.
+
+A **block** is the code between `{` and `}`: a function body, or a block written on its
+own. How long something lives depends on where it's written:
+
+| What | It lives until… |
+|---|---|
+| a name | the end of the block it's declared in |
+| a parameter | its function call ends. A parameter that a function given back keeps lives on in the function's kept block (7.8) |
+| a kept block | the call ends whose frame holds it, or the heap value that holds it is freed (7.8) |
+| a value that isn't given a name | the end of its statement |
+| a value on the heap | its owner ends, or gives it up (8.11) |
+
+```go
+var a: int = 1;
+{
+    var b: int = 2;        // b starts here
+    a = a + b;             // a is now 3
+}                          // b ends here
+                           // a is still here
+
+4;                         // a value with no name: it's gone once the statement is done
+```
+
+When a name ends, its value is removed from the stack. If the name owns a value on the
+heap, that value is freed too.
+
+**(adjusted)** One case ends sooner than the table says. Before the last call of a function,
+the function's names and parameters end, and so do the kept blocks in its frame and the values
+made on the spot in that statement (10.4).
+
+### 2.7 Writing the source **(needs review)**
+
+A program is one source file (section 11). The file is plain text in UTF-8.
+
+**Characters.** Outside comments and text, the file uses only the letters, digits and symbols
+of ASCII, with spaces, tabs and line breaks between them. A comment or a piece of text (5.10)
+can hold any character.
+
+**Spaces, tabs and line breaks only separate things.** They can go between any two words,
+numbers or symbols, and a statement can run over several lines. A statement ends at its `;`
+(2.5), never at a line break. A line break is the character `\n`, alone or after a `\r`.
+
+**Comments.** `//` starts a comment, and the comment runs to the end of the line. There is
+no other kind of comment.
+
+**Names.** A name starts with a letter or `_`. After that come letters, digits and `_`.
+Case matters, so `point` and `Point` are two different names:
+
+```go
+count   total2   _spare   makePoint   Point      // five names
+2total                                           // ERROR: a name can't start with a digit
+```
+
+**Reserved words.** Seven words belong to the language and are never names:
+
+```
+const   var   return   void   true   false   null
+```
+
+**Built-in names.** The built-in types and functions are ordinary names that are already
+declared when the file starts:
+
+| Built-in names | What they are |
+|---|---|
+| `int8` `int16` `int32` `int64` `uint8` `uint16` `uint32` `uint64` `float32` `float64` `int` `uint` `float` `bool` `char` `type` `any` | types (3.1) |
+| `convert` `wrap` `unwrap` `print` `read` `join` `exit` | functions (13) |
+
+A name is declared only once (2.8), so the file can't declare any of them again:
+
+```go
+const int: type = int8;        // ERROR: int is already declared
+var print: int = 3;            // ERROR: print is already declared
+```
+
+**Symbols.** These are all the symbols:
+
+```
+=   ;   :   ,   .   (   )   [   ]   {   }
++   -   *   /   %   ==   !=   <   >   <=   >=   &&   ||   !
+^   &   @   ~   ?   "   '   //
+```
+
+Where two symbols could be read as one longer symbol, the longer one is read: `<=` is one
+symbol, not `<` and then `=`. `&&` is always read as one symbol, and where it stands says
+whether it means *and* or two borrow marks (3.2).
+
+How numbers, `char`s and text are written is in 3.2 and 5.10.
+
+### 2.8 A name is declared once **(needs review)**
+
+A name can be seen from its declaration to the end of its block (2.6): in
+that block, and in every block and function body inside it (7.8).
+
+**A name can't be declared where the same name can already be seen.** So a name means one
+thing wherever it is read. This holds for every way of declaring a name: a `const`, a `var`,
+a parameter (7.4), the name of a type parameter in a function type (4.3), and the built-in
+names (2.7). A field of a struct is not a name in this sense. It is only ever reached with a
+dot, so it never clashes with any other name (9.2).
+
+```go
+var count: int = 3;
+var count: int = 4;            // ERROR: count is already declared in this block
+{
+    var count: int = 5;        // ERROR: the count of the outer block can be seen here
+    var inner: int = 1;
+}
+{
+    var inner: int = 2;        // fine: the first inner ended at its }
+}
+
+const twice: (int)int = (const count: int){ return count * 2; };   // ERROR: count can be seen here
+const triple: (int)int = (const n: int){ return n * 3; };          // fine
+const square: (int)int = (const n: int){ return n * n; };          // fine: triple's n ended with its body
+```
+
+Two names can be spelled the same when neither can be seen from the other, like the two
+`n`s above. A name behind a `.` (`p.x`, `a.length`) is found through the value in front of the
+`.`, so it never clashes with a name declared somewhere else.
+
+**A name is used only below its declaration.** A name that is used but never declared is an
+error. The value of a declaration uses names declared above it. There are four exceptions, and
+each is safe because nothing runs too early:
+
+| Exception | Why it is safe |
+|---|---|
+| a function's body can use any top-level name (11.1) | the body runs only when the function is called |
+| a function's body can use the function's own name (7.8) | the same reason |
+| a type name declared at the top level can be used anywhere in the file, also in its own declaration (4.2, 4.6) | a type is known before the program runs, so nothing runs at all |
+| a type name declared inside a function can be used in its own declaration (4.6) | the same reason |
+
+A top-level name can be seen in every function body, wherever it is declared. So no other
+name in the file can be spelled like it: no name in a block or in a function, no parameter,
+and no type parameter in a function type.
+
+**How a name is found.** The compiler looks for a name in the block where it is used, then
+in each block around it, out to the top level of the file, and last among the built-in names.
+The rules above mean it finds at most one.
+
+### 2.9 Statements **(needs review)**
+
+A block holds statements, and so does the top level of the file (11.1). There are five kinds:
+
+| Statement | Form | Example |
+|---|---|---|
+| a declaration | `kind name: Type = value;` | `var count: int = 3;` (2.1) |
+| an assignment | `place = value;` | `count = 4;` |
+| a value on its own | `value;` | `countUp();` |
+| a return | `return value;` or `return;` | `return x + y;` (7.1, 7.3) |
+| a block | `{ … }` | a smaller scope (2.6) |
+
+Every statement ends with `;` (2.5), except a block, which ends at its `}`. A `return` is
+written only inside a function body.
+
+**Any value can stand on its own as a statement.** It is worked out, and then it is gone
+(2.6). A call is the usual case. `4;` is allowed too, and does nothing.
+
+**An assignment gives a place a new value.** A place is somewhere a value is held:
+
+| Place | Example | It can be assigned when |
+|---|---|---|
+| a name | `count = 4;` | the name is a `var` (2.3) |
+| an element | `scores[0] = 15;` | the array or the pair can be assigned (5.2, 5.8) |
+| a map entry | `seen[4] = true;` | the map can be assigned, and the key is in it (6.3) |
+| a field | `p.x = 5;` | the struct can be assigned (9.3) |
+| what a pointer leads to | `p~ = 6;` | `p` is a `var` heap owner, a `var` borrower or a `var` ownership (8.3, 8.6, 8.9) |
+| an ownership | `@q = @p;` | `q` can be assigned. This is a move (8.9) |
+
+The forms combine, read from left to right: `list~.next~.value = 3;`, `table[0][1] = 12;`,
+`both[0]~ = 7;`. The rule for all of them is one rule: **what a `const` name reaches can't be
+changed through that name.** So the left side of an assignment starts at a `var` name, or it
+goes through a pointer that may be changed through (8.6).
+
+```go
+second(&list~)~.value = 5;     // fine: the call gives a borrower, and the place is behind it (8.13)
+makePoint(1, 2).x = 5;         // ERROR: a place starts at a name, or goes through a pointer
+scores[1:3] = [0, 0];          // ERROR: scores[1:3] is a copy, not a place (5.9)
+scores.length = 4;             // ERROR: a length never changes (5.5)
+```
+
+**An assignment is a statement, not a value.** It can't be written inside another value:
+
+```go
+a = b = 3;                     // ERROR: b = 3 is a statement, not a value
+```
+
+**An assignment works out its right side first.** Then it finds the place on the left, frees
+what the place owned (8.8), and puts the new value in. A call uses the same order: every
+argument is worked out before any parameter is set (7.2). Values come first, and places
+after. A move, `@q = @p;`, keeps to the same order: the ownership on the right is worked out,
+the place on the left is found, the value is taken out of the old variable, which is left
+`null`, then what the place owned is freed, and the value is put in (8.9).
+
+```go
+var scores: []int = [10, 20, 30];
+var i: int = 0;
+const next: ()int = (){
+    i = i + 1;
+    return i;
+};
+
+scores[i] = next();            // next() runs first and makes i 1, so this sets scores[1] to 1
+```
+
+**Everything else is worked out from left to right:**
+
+| In | The order |
+|---|---|
+| `a + b`, `a < b` and every operator with two sides | the left side, then the right side |
+| `a && b`, `a \|\| b` | the left side, then the right side only when it's needed (3.2) |
+| `[a, b, c]`, a struct value, a map value | the parts in the order they are written. In a map value, each key before its value |
+| `a[i]`, `a[i:j]` | `a`, then `i`, then `j` |
+| `f(a, b)` | `f`, then `a`, then `b`, and then the parameters are set (7.2) |
+
+---
+
+## 3. Types
+
+### 3.1 Basic types
+
+These types are built in:
+
+| Type | Holds | Size |
+|---|---|---|
+| `int8` | whole numbers from -128 to 127 | 8 bits |
+| `int16` | whole numbers from -32,768 to 32,767 | 16 bits |
+| `int32` | whole numbers from -2,147,483,648 to 2,147,483,647 | 32 bits |
+| `int64` | whole numbers from -9,223,372,036,854,775,808 to 9,223,372,036,854,775,807 | 64 bits |
+| `uint8` | whole numbers from 0 to 255 | 8 bits |
+| `uint16` | whole numbers from 0 to 65,535 | 16 bits |
+| `uint32` | whole numbers from 0 to 4,294,967,295 | 32 bits |
+| `uint64` | whole numbers from 0 to 18,446,744,073,709,551,615 | 64 bits |
+| `float32` | numbers with a decimal point, to about 7 digits | 32 bits |
+| `float64` | numbers with a decimal point, to about 15 digits | 64 bits |
+| `bool` | `true` or `false` | 8 bits |
+| `char` | one character | 8 bits |
+
+A `u` in front means unsigned: the number is never negative.
+
+Underneath, a `bool` is a number: `false` is 0 and `true` is 1. Its type still keeps it apart
+from the numbers, so it is never used as one without a conversion (3.2).
+
+Three everyday names stand for the 64-bit types:
+
+| Name | Is the same type as |
+|---|---|
+| `int` | `int64` |
+| `uint` | `uint64` |
+| `float` | `float64` |
+
+These are ordinary names for those types, the same as naming a type yourself (4.1), so an
+`int` and an `int64` are the same type.
+
+Two more built-in types have their own sections: `type`, the type of a type (4.1), and `any`,
+a value of any type (4.5).
+
+### 3.2 Writing basic values
+
+```go
+const total: int = 42;
+const price: float = 9.5;
+const ready: bool = true;
+const letter: char = 'a';
+```
+
+| You write | It is |
+|---|---|
+| `42`, `-7` | a whole number |
+| `9.5`, `3.0` | a number with a decimal point |
+| `true`, `false` | a `bool` |
+| `'a'` | a `char` |
+
+**(needs review)** The exact forms:
+
+| Kind | Written as | Examples |
+|---|---|---|
+| a whole number in base ten | digits | `42`, `0`, `1000` |
+| a whole number in base sixteen | `0x`, then digits and the letters `a` to `f`, in either case | `0xFF`, `0x1f` |
+| a whole number in base two | `0b`, then `0`s and `1`s | `0b1010` |
+| a number with a decimal point | digits, a point, digits, and then optionally `e` and a power of ten | `9.5`, `3.0`, `1.5e3`, `2.0e-3` |
+| a `char` | one character between two `'`, or one escape | `'a'`, `'\n'` |
+| a text | characters and escapes between two `"` (5.10) | `"Carl"` |
+
+- A number with a decimal point has a digit on both sides of the point: `0.5` and `3.0`,
+  never `.5` or `3.`.
+- `e` multiplies by a power of ten: `1.5e3` is `1500.0`. The `e` can be written `E`, and the
+  power can carry a `+` or a `-`.
+- A number can't run straight into a name, or into a digit its base doesn't have: `2total`
+  and `0b12` are errors (2.7).
+- `true` and `false` are the two `bool` values, and `null` is the pointer that points at
+  nothing (8.10). All three are reserved words (2.7).
+- A **written value** is a number, a `char`, a text, `true` or `false` written in the code in
+  one of these forms. A number with a `-` directly in front of it, such as `-7`, is a written
+  value too. A name is not a written value, and neither is anything that has to be worked
+  out. Several rules let the compiler check a line when the values in it are written
+  values, and otherwise leave the check to the running program (5.2, 5.3, 5.9, 6.1 to 6.3).
+
+**(needs review)** An escape writes a character that can't be typed between the quotes:
+
+| Escape | The character |
+|---|---|
+| `\n` | new line (number 10) |
+| `\t` | tab (number 9) |
+| `\r` | carriage return (number 13) |
+| `\0` | the character with number 0 |
+| `\\` | `\` |
+| `\'` | `'` |
+| `\"` | `"` |
+| `\x41` | the character whose number is written with two base-sixteen digits: here 65, `'A'` |
+
+**(needs review)** A `\` followed by anything else is an error. A `char` is 8 bits (3.1): one
+byte, holding a number from 0 to 255. The characters of ASCII have the numbers 0 to 127. A
+character outside ASCII takes more than one byte in UTF-8, so it doesn't fit in a `char`:
+
+```go
+const e: char = 'é';           // ERROR: é is two bytes, and a char holds one
+```
+
+**(needs review)** In a text it is simply two `char`s (5.10).
+
+**A number written in the code takes the type of the place it's written for.** A whole
+number fits any whole-number type it's in range for, and a number with a decimal point
+fits either float type:
+
+```go
+var small: int8 = 5;           // 5 is an int8 here
+var level: uint8 = 200;        // 200 is a uint8 here
+var ratio: float32 = 0.5;      // 0.5 is a float32 here
+
+var big: uint8 = 300;          // ERROR: 300 doesn't fit in a uint8
+var below: uint8 = -1;         // ERROR: a uint8 is never negative
+var half: int = 2.5;           // ERROR: 2.5 isn't a whole number
+var rate: float = 3;           // ERROR: write 3.0
+```
+
+**(needs review)** The place a written number takes its type from is the nearest thing around it
+that has a type: the declaration or assignment it's the value of, the parameter it's passed
+to, the `return` it's given back by, the array, pair, map or struct value it's written in, the
+index or key it is used as, or the other side of an operator. The type passes inwards through
+brackets, through a `-` in front, through `+`, `-`, `*`, `/` and `%`, and through the marks
+`^`, `&` and `@` (8.2). In an array value that has no place of its own, a written number takes
+the type of the elements that already have one, as in `[small, 5]`:
+
+```go
+var tiny: int8 = (2 + 3) * 4;      // 2, 3 and 4 are all int8s here
+const low: bool = tiny < 100;      // 100 takes the type of the other side: an int8
+var boxed: ^int8 = ^5;             // a ^int8 is asked for, so the 5 under the ^ is an int8
+```
+
+**(needs review)** A written number with no place to take a type from is an `int`, or a `float`
+when it has a decimal point: in `4;` the `4` is an `int`, and in `3 > 2` both numbers are
+`int`s.
+
+**A value never changes type by itself.** Once a value has a type, using it as another
+type takes a conversion that you write out (4.4):
+
+```go
+var count: int = small;                       // ERROR: small is an int8
+var count: int = convert(int8, int)(small);   // fine: the conversion is written
+```
+
+**`+`, `-` and `*` work on two numbers of the same type** and give a number of that type:
+
+```go
+var sum: int = count + 2;                             // 2 is an int here
+var mixed: int = count + small;                       // ERROR: an int and an int8
+var fixed: int = count + convert(int8, int)(small);   // fine
+```
+
+**(needs review) `/` divides and `%` gives the remainder.** Like `*`, each works on two numbers
+of the same type and gives a number of that type:
+
+| You write | It gives | Examples |
+|---|---|---|
+| `a / b` on whole numbers | how many whole times `b` goes into `a`. The part after the decimal point is dropped, as in a conversion (4.4) | `7 / 2` is `3`, and `-7 / 2` is `-3` |
+| `a % b` on whole numbers | what is left over when `a` is divided by `b`. It has the sign of `a`, and `a` is always `(a / b) * b + a % b` when `a / b` fits | `7 % 2` is `1`, and `-7 % 2` is `-1` |
+| `a / b` on floats | `a` divided by `b` | `7.0 / 2.0` is `3.5` |
+
+**(needs review)** `%` works on whole numbers only. It fails only when `b` is 0: `a % -1` is 0 for
+every `a`, also for the one `a` where `a / -1` doesn't fit.
+
+**(needs review) `-` in front of a number gives its negative.** It works on a signed whole
+number or a float, and never on an unsigned number. A `-` directly in front of a written
+number is part of that number when its type is checked, so `-128` fits in an `int8` although
+`128` doesn't. Spaces between the `-` and the number make no difference. With brackets in
+between, as in `-(128)`, the `128` has to fit by itself:
+
+```go
+var low: int8 = -128;          // fine: -128 is in range for an int8
+var flipped: int = -count;     // the negative of count
+var up: int = -(count - 10);   // brackets first, then the -
+var off: uint8 = -level;       // ERROR: level is a uint8, and a uint8 is never negative
+```
+
+**(needs review) A result always fits its type.** `+`, `-`, `*`, `/`, `%` and a `-` in front
+give a number of the type that went in. When the true answer doesn't fit in that type, the
+program fails while it runs (11.2), the same as a conversion that doesn't fit (4.4). A number
+never wraps around, and it never turns into another type.
+
+| Line | Fails while running when |
+|---|---|
+| `a + b`, `a - b`, `a * b`, `-a` | the answer is outside the range of the type |
+| `a / b` on whole numbers | `b` is 0, or the answer is outside the range: `-128 / -1` in `int8`s |
+| `a % b` | `b` is 0 |
+| any of them on floats | the answer is too big for the type, or isn't a number at all: `1.0 / 0.0`, `0.0 / 0.0` |
+
+**(needs review)** So a float is always an ordinary number: there is no infinity and no "not a
+number" value, and dividing by `0.0` fails like dividing by `0`. Floats follow the IEEE 754
+standard that processors use: a `float32` is its 32-bit format and a `float64` its 64-bit
+format. An answer that can't be held exactly is rounded to the nearest value that can. When two
+are equally near, it is the one whose last binary digit is 0. An answer too small to tell from
+zero becomes zero. A written float is checked like a written whole number: `1.0e39` is too big
+for a `float32`, so writing it for one is an error. `0.0` and `-0.0` are equal (3.7), and each
+keeps its sign when it is written as text (5.10).
+
+**(needs review)** The compiler makes the check itself where it already knows the answer: when
+every number is a written value, and when a number is divided by a written `0` or `0.0` with
+`/` or `%`:
+
+```go
+var over: int8 = 100 + 100;    // ERROR: 200 doesn't fit in an int8
+var none: int = count / 0;     // ERROR: division by zero
+var left: int = count % 0;     // ERROR: division by zero
+var rate: float = price / 0.0; // ERROR: division by zero
+```
+
+**Comparing two values of the same type gives a `bool`:**
+
+| Operator | `true` when |
+|---|---|
+| `==` | the two values are equal |
+| `!=` | the two values are different |
+| `<` | the left value is smaller |
+| `>` | the left value is bigger |
+| `<=` | the left value is smaller or equal |
+| `>=` | the left value is bigger or equal |
+
+```go
+const isBig: bool = count > 10;
+const isFive: bool = small == 5;       // 5 is an int8 here
+const wrong: bool = count == small;    // ERROR: an int and an int8
+```
+
+**(needs review)** Which types each comparison works on:
+
+| Operators | Work on |
+|---|---|
+| `==` `!=` | two values of the same type, whatever the type. What "equal" means for each type is in 3.7 |
+| `<` `>` `<=` `>=` | two numbers of the same type, or two `char`s, which compare by their numbers |
+
+**(needs review)** A comparison gives a `bool`, and a `bool` has no order. So `<`, `>`, `<=` and
+`>=` don't chain:
+
+```go
+const between: bool = 0 < count < 10;         // ERROR: 0 < count is a bool, and < doesn't work on a bool
+const inside: bool = 0 < count && count < 10; // fine
+const early: bool = 'a' < 'b';                // true: 97 is less than 98
+```
+
+**`&&`, `||` and `!` work on `bool`s and give a `bool`:**
+
+| You write | Read it as | It is `true` when |
+|---|---|---|
+| `a && b` | `a` and `b` | both are `true` |
+| `a \|\| b` | `a` or `b` | at least one of them is `true` |
+| `!a` | not `a` | `a` is `false` |
+
+```go
+const inRange: bool = count > 0 && count < 10;
+const stop: bool = !ready || count > 10;
+const mixed: bool = count && ready;    // ERROR: count is an int, not a bool: write count != 0
+const empty: bool = !count;            // ERROR: count is an int, not a bool: write count == 0
+```
+
+**`&&` and `||` work out the left side first, and the right side only when it's needed.** A
+`false` on the left of `&&` already makes the answer `false`, and a `true` on the left of
+`||` already makes it `true`, so in those two cases the right side is skipped:
+
+```go
+const big: bool = p != null && p~ > 10;    // p~ is followed only when p isn't null (8.10)
+```
+
+`&&` between two values is *and*. In front of a value or inside a type it is two borrow
+marks: `&&int` is a borrower of a borrower (3.4). Where it stands tells the two apart.
+
+**The order of operations** is the usual one, as in maths and most programming languages.
+Each row of this table goes before the rows below it:
+
+| Step | What | Examples |
+|---|---|---|
+| 1 | what is behind a value: following, indexing, calling, a field (8.2) | `p~` `a[0]` `f(1)` `pt.x` |
+| 2 | what is in front of a value: `!`, `-` and the marks (8.2) **(adjusted: `-` added)** | `!ready` `-count` `^v` `&x` `@x` |
+| 3 | `*` `/` `%` **(adjusted: `/` and `%` added)** | `limit * 2` `total / 2` |
+| 4 | `+` `-` | `count + 1` |
+| 5 | the comparisons | `==` `!=` `<` `>` `<=` `>=` |
+| 6 | `&&` | `a && b` |
+| 7 | `\|\|` | `a \|\| b` |
+
+Operators in the same step go from left to right.
+
+```go
+count + 1 > limit * 2 && !ready
+// && joins two tests: count + 1 > limit * 2, and !ready
+// >  compares two numbers: count + 1, and limit * 2
+
+a || b && c            // a, or both of b and c
+10 - 4 - 3             // 3: 10 - 4 goes first
+!seen[4]               // the opposite of seen[4]: the index goes first
+```
+
+**(needs review)** A `-` between two values subtracts. A `-` where a value starts is the minus in
+front:
+
+```go
+a - -b                 // a, minus the negative of b
+-a * b                 // the negative of a, times b: what is in front goes before *
+10 / 4 * 2             // 4: 10 / 4 is 2, then 2 * 2
+```
+
+**Brackets change the order.** What is inside a pair of brackets is worked out first:
+
+```go
+(count + 1) * 2        // the sum first, then * 2
+(a || b) && c          // a or b, and c as well
+!(ready && count > 0)  // true unless both tests are true
+```
+
+The order says how a line is read, not when each part runs: the right side of `&&` and `||`
+is still skipped when it isn't needed.
+
+**What a `(` starts.** Brackets also write function types (3.3), function values (7.1) and
+calls (7.2). Where a `(` stands tells them apart:
+
+| A `(` … | Starts | Example |
+|---|---|---|
+| right after a value | a call | `f(1)`, `first(bool)([true, false])` |
+| holding parameters, each with `const` or `var`, or empty, then followed by `{` | a function value | `(const x: int){ … }` |
+| holding types, or nothing, then a return type. A type parameter can carry a name (4.3) | a function type | `(int, int)int`, `()void`, `(T: type)T` |
+| holding one value that isn't a type | a group | `(count + 1) * 2` |
+
+The compiler knows which values are types, because their type is `type` (4.1). So `(a)`
+starts a function type when `a` is a type, and a group when it isn't. A type is never put in
+a group: in a type, `(` always starts a function type, and no type needs grouping (3.4).
+
+**(adjusted)** In these rules, "a type" means a type that is written out: a type name
+(4.2), or one of the forms of 3.6 made from type names. A value that only holds a type, such
+as a `var` of type `type` or `x.T` (4.2, 4.5), is an ordinary value, so `(x.T)` is a group.
+
+**(needs review)** After an empty `()`, a `{` could start the body of a function value or a
+struct type that a function type returns. The compiler looks inside the braces. Fields
+written `name: Type` with commas between them make a struct type, and a single type is the
+key of a map type: `(){x: int, y: int}` takes nothing and returns a struct, and `(){int}bool`
+returns a map. Anything else is the body of a function value: `(){ return 1; }`, and `(){ }`
+with nothing inside.
+
+### 3.3 Every modifier goes in front
+
+A type is a basic type, or a modifier followed by a type. A basic type is a built-in type
+(3.1) or the name of a type (section 4).
+
+| Kind | Form | Example | Read as |
+|---|---|---|---|
+| fixed array | `[n]T` | `[3]int` | array of 3 ints |
+| unsized array | `[]T` | `[]int` | array of ints |
+| pair | `?T` | `?int` | two ints: one for `false`, one for `true` |
+| map | `{K}V` | `{int}bool` | map from int keys to bool values |
+| function | `(P1, P2)R` | `(int, int)int` | takes two ints, returns an int |
+| function that returns nothing | `(P1, P2)void` | `(int)void` | takes an int, returns nothing |
+| function that takes a type | `(T: type)R` | `(T: type)([]T)T` | takes a type, called `T` in the rest of the type, and returns a function for arrays of it (4.3) |
+| struct | `{a: T1, b: T2}` | `{debug: bool, size: int}` | a struct with a bool field `debug` and an int field `size` |
+| on the heap | `^T` | `^int` | an int on the heap, owned by this holder (section 8) |
+| borrowed | `&T` | `&int` | an int that another holder owns (section 8) |
+| ownership | `@T` | `@int` | the ownership of an int variable (8.9) |
+
+### 3.4 Modifiers stack in any combination
+
+Read every type from left to right, one modifier at a time:
+
+```go
+[3](int)int            // array of 3 → functions taking int → returning int
+(int)[]int             // function taking int → returning array of ints
+(int)(int)int          // function taking int → returning a function (int)int
+((int)int, int)int     // function taking a function (int)int and an int → returning int
+{int}(int)int          // map from int → to functions (int)int
+{int}[3]int            // map from int → to arrays of 3 ints
+[3]{int}bool           // array of 3 → maps from int to bool
+[2][3]int              // array of 2 → arrays of 3 ints
+[3]^int                // array of 3 → ints on the heap
+^[3]int                // on the heap → an array of 3 ints
+[2]&int                // array of 2 → borrowed ints
+(&int)void             // function taking a borrowed int → returning nothing
+(@^int)void            // function taking the ownership of a heap int → returning nothing
+(int)^[3]int           // function taking int → returning an array of 3 ints on the heap
+```
+
+Swapping two modifiers swaps the meaning, and the order shows it:
+
+| Type | Meaning |
+|---|---|
+| `[3](int)int` | array of 3 functions |
+| `(int)[3]int` | function returning an array of 3 |
+| `[2]{int}bool` | array of 2 maps |
+| `{int}[2]bool` | map whose values are arrays of 2 |
+| `[3]^int` | three ints, each on the heap |
+| `^[3]int` | one array of 3 ints on the heap |
+
+No type ever needs brackets to group it, and none is grouped: in a type, `(` always starts a
+function type (3.2).
+
+### 3.5 Types read in the order you use the value
+
+```go
+// f: (int)(bool)[3]int
+f(1)(true)[0]          // call with an int, call with a bool, index → an int
+```
+
+The type says *call, call, index, int*, and the use says *call, call, index*: the same
+order.
+
+The heap and borrow marks work the same way (8.2):
+
+```go
+// p: ^[3]int
+p~[0]                  // follow, index → an int
+
+// ps: [3]^int
+ps[0]~                 // index, follow → an int
+```
+
+### 3.6 Grammar
+
+```
+Type      = BasicType
+          | "[" [ NUMBER ] "]" Type           (array: fixed or unsized)
+          | "?" Type                          (pair: one Type for false, one for true)
+          | "{" Type "}" Type                 (map: {key}value)
+          | "{" FieldList "}"                 (struct: its fields, section 9)
+          | "^" Type                          (a value on the heap, section 8)
+          | "&" Type                          (a borrowed value, section 8)
+          | "@" Type                          (the ownership of a variable, section 8)
+          | "(" [ TypeList ] ")" Return       (function: parameter types, then the return type)
+Return    = Type | "void"                     (void = returns nothing)
+TypeList  = TypeItem { "," TypeItem }
+TypeItem  = [ NAME ":" ] Type                 (a name only on a type parameter that a later part uses, 4.3)
+FieldList = NAME ":" Type { "," NAME ":" Type }
+```
+
+A struct type writes each field as `name: Type` (9.1). A function type lists only types. The
+one name it can hold is the name of a type parameter that a later part of the type uses, as in
+`(T: type, []T)T` (4.3).
+
+A function type always ends with its return type. A function that returns nothing ends
+with `void`: `(int)void` takes an int and returns nothing, and `()void` takes nothing and
+returns nothing.
+
+**(needs review)** Two more lines complete it:
+
+```
+BasicType = NAME                              (the name of a type, 4.2)
+NUMBER    = a whole number written in the code (3.2)
+```
+
+**(needs review)** A type is written with these forms wherever a type is expected: after the `:`
+of a declaration, a parameter or a field, and inside another type. A `NAME` here is a type name
+(4.2). The full grammar of the language is in Appendix A.
+
+**(needs review)** Two types are the same type when they are the same once every type name is
+replaced by what it names (4.1). The names of a struct's fields are part of its type, and so is
+their order (9.1): `{x: int, y: int}` and `{w: int, h: int}` are two different types. A function
+type has no names to compare: the names of parameters, and `const` and `var`, are not part of it
+(7.4). The name it gives a type parameter only ties the parts of the type together, so
+`(T: type)([]T)T` and `(E: type)([]E)E` are the same type (4.3). For a type
+that names itself (4.6) the replacing never ends, so the rule there is: two types are the same
+when no difference shows up however far the names are followed.
+`const A: type = {value: int, next: ^A};` and `const B: type = {value: int, next: ^B};` are
+the same type. To check it, the compiler follows both types
+side by side, and counts a pair of names it has already met as the same.
+
+### 3.7 What "equal" means **(needs review)**
+
+**`==` compares exactly what `=` copies (8.8).** So a copy is always equal to the
+value it was copied from, and that one rule says what "equal" means for every type:
+
+| Type | `=` copies | So two values are equal when |
+|---|---|---|
+| a number, a `bool`, a `char` | the value | they are the same value |
+| an array `[n]T` or `[]T`, a text | every element | they have the same length, and every element is equal |
+| a pair `?T` | both values | both values are equal |
+| a struct | every field (8.8) | every field is equal, field by field |
+| a map | every key and its value | they have the same keys, and the values under each key are equal |
+| a heap owner `^T` | the value on the heap | the values they own are equal, or both are `null` |
+| a borrower `&T`, an ownership `@T` | the address | they point at the same place, or both are `null`. Two `&[]T` also need the same length |
+| a function | its two addresses (7.7) | they are the same code, and they keep the same place |
+| a `type` | the type | they are the same type |
+| an `any` | the type inside and the value inside | the types inside are the same, and the values are equal |
+
+`!=` is the opposite of `==`. Comparing copies nothing and changes nothing.
+
+```go
+var a: [3]int = [1, 2, 3];
+var b: [3]int = a;
+a == b                         // true: a copy equals its original
+b[0] = 9;
+a == b                         // false: the first elements differ
+
+var p: ^int = ^5;
+var q: ^int = p;               // q owns its own heap int, holding 5
+p == q                         // true: = copied the value, so == compares the values
+var r: &int = &p~;
+var s: &int = &q~;
+r == s                         // false: two different places
+r~ == s~                       // true: both places hold 5
+
+"Carl" == "Carl"               // true: two texts with the same chars
+p == null                      // false: p owns a value
+```
+
+- The two sides always have the same type (3.2). A `[3]int` and a `[4]int` are different
+  types, so comparing them is an error. Two `[]int` of different lengths are the same type,
+  and they are simply not equal.
+- A `null` takes the pointer type of the other side.
+- Two floats are equal when they are the same number. Every float is an ordinary number
+  (3.2), so a float always equals itself. `0.0` and `-0.0` are equal.
+- Comparing two big values looks at every part, the way `=` copies every part. To ask
+  whether two borrowers lead to equal values, compare what they lead to: `r~ == s~`.
+
+### 3.8 The type of every value **(needs review)**
+
+The compiler gives every value a type before the program runs. This table says how, form by
+form. "Its place" is where the value is written: what it is declared as, assigned to, passed
+to, returned as, held in or used as, or the other side of an operator (3.2).
+
+| Form | What it needs | Its type |
+|---|---|---|
+| a written number | to fit the type | the number type of its place. With no place: `int`, or `float` with a decimal point (3.2) |
+| `true`, `false` | | `bool` |
+| `'a'` | | `char` |
+| `null` | a place | the `^T`, `&T` or `@T` of its place (8.10) |
+| `[a, b, c]`, `"abc"` | every element is a `T` | the `[n]T` or `[]T` of its place, or its `?T` when there are two elements. With no place: `[n]T`, a fixed array of what the elements are. Written numbers among them take the type of the other elements (3.2) |
+| `{ x: int = 1; y: int = 2; }` | each value has the type written in its field | the struct type with those fields: `{x: int, y: int}`. It has to be the type of its place, when it has one (9.2) |
+| `{k1: v1, k2: v2}` | every key is a `K`, every value a `V` | the `{K}V` of its place. With no place: `K` and `V` are what the keys and values are (6.1) |
+| `(const x: P1, var y: P2){ … }` | every `return` gives an `R` | `(P1, P2)R`, where `R` is the return type of its place. With no place: `R` is what its `return`s give, or `void` (7.1) |
+| a name | | the type it was declared with |
+| a type, such as `int`, `[3]int` or `Point` | | `type` (4.1) |
+| `(a)` | `a` isn't a type | the type of `a` |
+| `-a` | `a` is a signed whole number or a float | the type of `a` |
+| `!a` | `a` is a `bool` | `bool` |
+| `a + b`, `a - b`, `a * b`, `a / b` | two numbers of the same type | that type |
+| `a % b` | two whole numbers of the same type | that type |
+| `a == b`, `a != b` | two values of the same type | `bool` |
+| `a < b`, `a > b`, `a <= b`, `a >= b` | two numbers of the same type, or two `char`s | `bool` |
+| `a && b`, `a \|\| b` | two `bool`s | `bool` |
+| `a[i]` | `a` is an `[n]T` or `[]T`, and `i` is an `int` | `T` (5.2) |
+| `a[i]` | `a` is a `?T`, and `i` is a `bool` | `T` (5.8) |
+| `a[i]` | `a` is a `{K}V`, and `i` is a `K` | `V` (6.2) |
+| `a[i:j]` | `a` is an `[n]T` or `[]T`. `i` and `j` are `int`s, and either can be left out | `[]T`, a copy. With `&` in front: `&[]T`, a slice (5.9) |
+| `a.length` | `a` is an array or a map | `int` (5.5, 6.3) |
+| `s.x` | `s` is a struct, and `x` is one of the fields of its type | the type of that field (9.1) |
+| `x.T` | `x` is an `any` | `type` (4.5) |
+| `f(a, b)` | `f` is a `(P1, P2)R`, `a` is a `P1` and `b` is a `P2` | `R` (7.2) |
+| `^v` | `v` is a `T` | `^T` (8.3) |
+| `&x` | `x` is a `T` | `&T` (8.4) |
+| `@x` | `x` is a `T` | `@T` (8.9) |
+| `p~` | `p` is a `^T`, an `&T` or an `@T` | `T` (8.2) |
+
+Three rules go with the table:
+
+- **Only a value written on the spot takes its type from its place:** a number, a `null`, an
+  array or text value, a map value and a function value. Every other value already has a type,
+  and it has to be exactly the type its place asks for (3.2).
+- **A value with no place has to say enough by itself.** `[]` and `{}` hold nothing that says
+  what `T`, `K` or `V` is, and a `null` doesn't say what it points at, so each needs a place.
+- **A call to a function that returns nothing has no value.** It can only stand on its own as
+  a statement (2.9):
+
+```go
+show(5);                       // fine
+var x: int = show(5);          // ERROR: show returns nothing
+```
+
+(`show` is the function from 7.3 that returns nothing.)
+
+---
+
+## 4. Types are values
+
+### 4.1 `type` is a type
+
+A type is a value, and the type of that value is `type`. `type` is a type like any other,
+so a type can be named, stored and passed around like every other value.
+
+**Naming a type** uses `const`:
+
+```go
+const Pair: type = [2]int;
+const Table: type = {int}[2]int;
+const Op: type = (int, int)int;
+const bitboard: type = uint;         // a basic type can be named too
+
+var p: Pair = [1, 2];
+const add: Op = (const x: int, const y: int){ return x + y; };
+const ops: [2]Op = [add, add];       // an array of Op
+var board: bitboard = 0;
+```
+
+A struct type is named the same way: `const Point: type = {x: int, y: int};` (9.1).
+
+A named type can be used anywhere a type can, including inside other types (`[2]Op`). A
+name for a type is the same type under another name, so a `bitboard` can be used wherever
+a `uint` can:
+
+```go
+var plain: uint = board;             // fine: bitboard and uint are the same type
+```
+
+**`type` goes wherever a type goes,** including inside other types:
+
+```go
+const wholeTypes: [2]type = [int8, int];          // an array of types
+const byCode: {int}type = {1: int, 2: bool};      // a map whose values are types
+
+wholeTypes[1]                // int
+byCode[2]                    // bool
+wholeTypes.length            // 2
+```
+
+A function can take a type as a parameter too, which is how generics work (4.3).
+
+**A type is a value, not a function, so it is never called:**
+
+```go
+int(3.0)                     // ERROR: int is a type, not a function; use convert (4.4)
+```
+
+**(needs review) A mark in front of a type that is written out makes a type.** `^int`, `&int` and
+`@int` are the types of 3.3. They are never a heap value, a borrower or an ownership made from
+the type `int`. A type that is held in a name is an ordinary value, so the marks work on it as
+on any value: with `var t: type = int;`, `^t` is a `^type`.
+
+### 4.2 Types never change
+
+A type name is always a `const`, so it can't be given a new value. Every value declared with
+it has a type that's known before the program runs.
+
+A `var` can hold a type too. The variable holds the type as a value: it can be compared,
+stored, passed and given another type later. It is not a type name, so it can't go after a `:`
+to declare anything. Only a type name declares things:
+
+```go
+var t: type = int;                   // fine: t holds the type int
+t = bool;                            // fine: t is a var
+t == bool                            // true
+var n: t = 5;                        // ERROR: t holds a type, but it is not a type name
+
+var kinds: [2]type = [int, bool];    // fine: an array of types can be a var as well
+kinds[0] = float;                    // fine
+```
+
+A type can be held as a value wherever a value can: in an array or a map (4.1), in a struct,
+as a function's parameter (4.3) or inside an `any` (4.5).
+
+A value's type is the one it was declared with. The type inside an `any` is read with
+`x.T` (4.5).
+
+**(needs review) A type name is a name whose value, a type, the compiler knows before the program
+runs.** There are three kinds: a built-in type (2.7), a `const` of type `type` whose value is a
+type written out, such as `Pair` and `Point`, and a `const` `type` parameter that its
+function's type names (4.3). Inside a function type, the name of a type parameter is a type
+name too (4.3). Every other name of type `type` only holds a type: a `var`, a `const` whose
+value has to be worked out, as in `const U: type = x.T;`, and a `type` parameter that the
+function's type gives no name.
+
+**(needs review) A type that decides the type of something is written out.** After a `:`,
+inside another type, and as an argument that a function's type uses (4.3), a type is written
+with type names and the forms of 3.6. A type that is held or worked out any other way, such as
+`t`, `kinds[0]`, `wholeTypes[1]`, `x.T` or `U` above, is a value like any other. It can be
+compared, stored and passed, but it can't declare anything:
+
+```go
+var m: wholeTypes[1] = 5;      // ERROR: write the type itself: int
+x.T == int                     // fine: comparing two types gives a bool (3.7)
+x.T == t                       // fine: t holds a type, and so does x.T
+first(t)                       // ERROR: first's type uses the type it is handed, so write it out (4.3)
+```
+
+**(needs review) A top-level type name can be used anywhere in the file,** above its declaration
+too (2.8). The compiler collects the top-level type names of the file before it reads anything
+else, so it always knows which names are types (3.2). It goes on until it finds no new one,
+because a type name can be declared with another type name.
+
+**(needs review) A type never ends too soon.** Every type is known before the program runs, and a
+`type` value is the address of something that is part of the program itself (4.3). So a type is
+never something that a function given back could outlast, and a type name takes no room in a
+kept block (7.7): `first([3]int)` is as good as `first(int)`.
+
+### 4.3 Generics: functions that take a type
+
+A type is a value, so it can be passed to a function like any other value. A generic
+function is just a function that takes a type as a parameter:
+
+```go
+const first: (T: type)([]T)T = (const T: type){
+    return (const v: []T){
+        return v[0];
+    };
+};
+
+const firstInt: ([]int)int = first(int);      // call first with the type int: gives a function for int arrays
+firstInt([7, 8])                              // 7: the first element
+
+const firstBool: ([]bool)bool = first(bool);  // the same for bool arrays
+firstBool([true, false])                      // true: the first element
+
+first(bool)([true, false])                    // true: the same, in one line
+```
+
+The last line is two calls in a row: `first(bool)` makes the function for bool arrays, and
+`([true, false])` calls that function straight away.
+
+The function `first` gives back uses `T`, a parameter of `first`, so it keeps `T` (7.8).
+
+`first(int)` gives back a function made for `int`, so what each call works with is written
+right there in the code.
+
+**A function type names a type parameter that a later part of the type uses.** A function type
+lists only types, and its parameters have no names: `(int, int)int` (7.4). A type parameter is
+the one exception. When a later part of the type uses the type that is handed in, the parameter
+is written `T: type`, and `T` stands for that type in the rest of the function type:
+
+```go
+(T: type)([]T)T                // T is used by the function that is given back
+(T: type, []T)T                // T is used by a later parameter, and by the return type
+(A: type, B: type)(A)B         // two type parameters: A is the first type handed in, B the second
+(type, type)bool               // nothing uses the two types, so they have no names
+```
+
+**(needs review)** The rules for that name:
+
+- It can be used from its parameter to the end of the function type that the parameter belongs
+  to: in the parameters after it, and in the return type. Anywhere else it is a name that isn't
+  declared (2.8).
+- Only a parameter of type `type` has a name, and only when the rest of the type uses it. A
+  name that nothing uses is an error, so each type is written in one way.
+- Like every name, it can't be spelled like a name that can already be seen where the type is
+  written (2.8). It ends with its function type, so two types can use the same name one after
+  the other.
+- The name itself is not part of the type: `(T: type)([]T)T` and `(E: type)([]E)E` are the
+  same type (3.6).
+- The function value declares its parameters itself, `(const T: type)`, and they match the
+  type by position, like every parameter (7.1). A parameter that the type names is declared
+  `const`. The code reads best when the two names agree, as in `first`.
+- A function value that is written where nothing asks for a type (3.8) has no function type
+  that could name its `type` parameters, so there they only hold a type. A generic function
+  value is written where a type asks for it: in a declaration, as an argument or as a result.
+
+```go
+([]T, T: type)T                // ERROR: T is used before the parameter that names it
+(T: type)([]T)U                // ERROR: U isn't declared
+(T: type)bool                  // ERROR: nothing uses T: write (type)bool
+(n: int)int                    // ERROR: only a type parameter has a name in a function type
+```
+
+**(needs review)** A type parameter and the values of its type can share one list of parameters.
+The function value declares them in the same order, so `T` is already declared where the next
+parameter needs it:
+
+```go
+const firstIn: (T: type, []T)T = (const T: type, const v: []T){
+    return v[0];
+};
+
+firstIn(int, [7, 8])           // 7: the type and the array in one call
+```
+
+**(needs review) Which `type` parameters are type names.** A `const` parameter of type `type`
+that the function's type names is a type name inside the function (4.2): `T` in `first`. The
+type handed to it is always written out, so the compiler knows it before the program runs. A
+`type` parameter that the function's type gives no name can be handed any value that holds a
+type. So inside the function it only holds a type, like a `var`: `a` and `b` in `sameType`
+below can be compared and passed on, but they can't be written after a `:`.
+
+**(needs review) Calling it.** At a call, the compiler puts the type that was handed in wherever
+its name stands in the function's type: `first(int)` is a `([]int)int`. So the type handed in
+is written out as a type (4.2) whenever the function's type uses it. Where the function's type
+doesn't use it, any value of type `type` will do:
+
+```go
+const sameType: (type, type)bool = (const a: type, const b: type){
+    return a == b;
+};
+
+sameType(x.T, int)             // fine: sameType's type names neither parameter
+sameType(t, kinds[0])          // fine: any two values that hold a type (4.2)
+first(x.T)                     // ERROR: the type of first(x.T) would only be known while running
+```
+
+**(needs review) What a generic function can do with a `T`.** The compiler checks the function
+once, for every type at the same time. Inside it, `T` is the name of a type, so it goes
+wherever a type is written: `const x: T = v[0];`. A value of type `T` can be used in the ways
+every type allows: it can be declared, copied, moved, borrowed, put on the heap, passed,
+returned, wrapped (4.5), compared with `==` and `!=` (3.7), and held in arrays, structs and
+maps. What only some types allow is an error. A `T` can be any type, so the compiler counts
+the worst case. For the lifetime rules, a value of type `T` counts as one that may hold a
+borrower, an ownership and a function (8.5, 8.13). For the rule that what is read-only stays
+read-only, it counts as a value with a borrower inside it (8.6). To add two `T`s, the caller
+passes the function that adds them:
+
+```go
+const sumBad: (T: type)(T, T)T = (const T: type){
+    return (const a: T, const b: T){ return a + b; };   // ERROR: + doesn't work on every type
+};
+
+const sumWith: (T: type)(T, T, (T, T)T)T = (const T: type){
+    return (const a: T, const b: T, const plus: (T, T)T){
+        return plus(a, b);     // fine: plus is a function for this T
+    };
+};
+
+sumWith(int)(2, 3, add)        // 5: add is the (int, int)int from 7.1
+```
+
+**(needs review) A type parameter is never handed an ownership type.** A parameter is never of
+the type `@X` itself (8.13), and inside a generic function a parameter can be a `T`. So the
+type handed to a type parameter that the function's type names can be any type except an `@X`
+itself. A type with an ownership inside it, such as `[2]@^int`, is fine.
+
+```go
+first(@^int)                   // ERROR: a type parameter is never handed an ownership type itself
+wrap(@^int)                    // ERROR: the same for the built-in wrap (4.5)
+```
+
+**(needs review) Every type is known before the program runs.** A type written with no type
+parameter in it is one type. A type written with a type parameter in it, such as `[]T`, is one
+type for each type the parameter is ever handed. The compiler finds them all. It starts at the
+calls that hand a function a type with no type parameter in it, puts that type in the place of
+the parameter, and follows the calls inside the function in the same way. For a call through a
+variable (7.2) it follows every function of that type. That only decides which types the
+program has, and it never turns a line away. It can do this because a type parameter that is a
+type name is always handed a type that is written out.
+
+**(needs review)** This has to come to an end. It is an error when a function is reached again,
+through its own calls, and one of its type parameters is handed a type that has strictly
+inside it the type that the same parameter had earlier on the way:
+
+```go
+const wrapMore: (T: type)(T)any = (const T: type){
+    return (const v: T){
+        return wrapMore([1]T)([v]);    // ERROR: wrapMore hands itself [1]T, then [1][1]T, and so on without end
+    };
+};
+```
+
+**(needs review)** A call through a variable can't be followed to one function, so for this rule
+it counts the worst case: it may reach every function again. No error here depends on which
+functions of that type the program has, so a function written somewhere else never makes a line
+an error (7.2). Two things follow:
+
+- Through a variable, a type parameter is handed only a type parameter as it is, or a type with
+  no type parameter in it.
+- A call that hands a type parameter a type with a type parameter strictly inside it is an
+  error when the function it calls hands one of its own type parameters on through a variable,
+  in its own body or in a function it reaches through calls the compiler sees.
+
+```go
+const viaVar: (T: type)(T)any = (const T: type){
+    return (const v: T){ return pick([1]T)([v]); };   // ERROR: pick is a variable, and [1]T has T strictly inside it
+};
+```
+
+(`pick` is a top-level `var` of type `(T: type)(T)any`.)
+
+**(needs review) Underneath, a `type` value is the address of a description of the type.** The
+compiler writes one description into the program for every type the program has. It holds the
+type's shape, in the forms of 3.6. Everything that is done to a value whose type is only
+learned while the program runs comes from that description: its size, how to copy it, move
+it, free it and compare it, and where the pointers and functions in it are. An `any` carries
+the address (4.5), and a generic function is handed one for each type parameter.
+
+- There is one description for each type, so two `type` values are equal exactly when they
+  are the same address (3.7).
+- A `type` value has one size, whatever type it holds. That is why a `var` can be given any
+  other type (4.2), and why an array of types is an ordinary array.
+- How a generic function reaches the description of a type that is written with `T`, such as
+  `[]T`, is up to the compiler. It can make one copy of the function for each type, or one
+  copy that looks the description up. A type name that a function given back keeps takes no
+  room (7.7), so such a function is made once for each type.
+
+### 4.4 Converting a value: `convert`
+
+A value never changes type by itself (3.2). To get a value of another type you call
+`convert`, a built-in function. It takes the type you convert **from** and the type you
+convert **to**, and gives back the function that does the conversion:
+
+```go
+convert(float, int)(3.0)               // 3
+convert(int, float)(3)                 // 3.0
+var whole: int = convert(float, int)(2.0);
+```
+
+`convert(float, int)` is a function of type `(float)int`. Like every built-in, it's an
+ordinary first-class value, so it can be named, stored and passed like any other function:
+
+```go
+const toInt: (float)int = convert(float, int);
+toInt(2.0)                             // 2
+```
+
+Both types are always written, so the code shows exactly what changes into what.
+
+What a conversion between the basic types gives:
+
+| Conversion | Example | Result |
+|---|---|---|
+| a smaller whole-number type to a bigger one | `convert(int8, int)(small)` | the same number: it always fits |
+| a whole number to a float | `convert(int, float)(3)` | `3.0` |
+| a float to a whole number | `convert(float, int)(3.7)` | `3`: the part after the decimal point is dropped |
+| a bigger type to a smaller one | `convert(int, int8)(100)` | `100`: checked when the line runs that it fits |
+| between signed and unsigned | `convert(int8, uint8)(5)` | `5`: checked when the line runs that it fits |
+| a `char` to its number, and back | `convert(char, uint8)('a')`, `convert(uint8, char)(97)` | `97`, `'a'` |
+
+**(needs review)** The rest of the table:
+
+| Conversion | Example | Result |
+|---|---|---|
+| a whole number to a float that can't hold it exactly | `convert(int, float32)(16777217)` | the nearest float: `16777216.0` |
+| a float to a whole number it is out of range for | `convert(float, int8)(300.0)` | fails while running: checked that it fits, like the rows above |
+| a `float32` to a `float64` | `convert(float32, float)(ratio)` | the same number: it always fits |
+| a `float64` to a `float32` | `convert(float, float32)(0.1)` | the nearest `float32`, checked when the line runs that it isn't too big |
+| a `char` to any whole-number type, and back | `convert(char, int)('a')`, `convert(int, char)(97)` | `97`, `'a'`: a `char` converts as the `uint8` it is underneath |
+| a `bool` to any whole-number type, and back | `convert(bool, int)(true)`, `convert(int, bool)(0)` | `1`, `false`: a `bool` converts as the number it is underneath (3.1). Going back, only 0 and 1 fit |
+| a number or a `bool` to text, and back | `convert(int, []char)(42)`, `convert([]char, int)("42")` | `"42"`, `42` (5.10) |
+| a type to itself | `convert(int, int)(3)` | `3` |
+
+**(needs review)** These are all the pairs `convert` has, in both directions: two number types;
+a `char` and a whole-number type; a `bool` and a whole-number type; a number and `[]char`; a
+`bool` and `[]char`. Each of these types also converts to itself. Any other pair is an error,
+and so is a pair with a type parameter in it, because not every `T` converts (4.3):
+
+```go
+convert([3]int, int)                   // ERROR: there is no conversion from an array to an int
+convert(bool, float)                   // ERROR: a bool converts to a whole number only
+convert(char, []char)                  // ERROR: a char is no number: write ['a'] for a text of one char
+```
+
+**(needs review)** `convert` itself is a function that takes two types, so its own type is
+`(A: type, B: type)(A)B` (4.3). That type promises a conversion for every pair of types, and
+`convert` has one only for the pairs above. Where the compiler sees that the call runs
+`convert` (7.2), it rejects any other pair, as above. Where `convert` is reached through a
+variable, such a pair fails while the program runs (11.2):
+
+```go
+var change: (A: type, B: type)(A)B = convert;
+change(float, int)(2.5)                // 2: the same as convert(float, int)(2.5)
+change(bool, float)                    // fails while running: no conversion from bool to float
+```
+
+A conversion whose value doesn't fit fails while the program runs:
+
+```go
+convert(int, int8)(300)                // fails while running: 300 doesn't fit in an int8
+convert(int8, uint8)(-1)               // fails while running: a uint8 is never negative
+```
+
+Because the conversion is always written out, every line where that can happen is visible
+in the code.
+
+### 4.5 `any`: a value of any type
+
+`any` is a built-in type for a value whose type is only known while the program runs.
+
+#### Wrapping and unwrapping
+
+Nothing takes a value of any type, so two built-in functions move a value into an `any`
+and back out. Each takes a type first and gives back the function for that type:
+
+| You write | Its type | What it does |
+|---|---|---|
+| `wrap(int)` | `(int)any` | wraps an `int` in an `any` |
+| `unwrap(int)` | `(any)int` | takes the `int` back out, checked when the line runs |
+
+```go
+var x: any = wrap(int)(3);         // holds the type int and the value 3
+var y: any = wrap(bool)(true);     // holds the type bool and the value true
+
+x.T                                // int: the type inside
+unwrap(int)(x)                     // 3: checked while running that x holds an int
+unwrap(bool)(x)                    // fails while running: x holds an int
+```
+
+`wrap(int)` and `unwrap(int)` are ordinary function values, so they can be named:
+
+```go
+const wrapInt: (int)any = wrap(int);
+var z: any = wrapInt(7);           // holds the type int and the value 7
+```
+
+`x` itself has the type `any`. The type inside it is `x.T`.
+
+**(needs review)** `wrap` and `unwrap` are functions that take a type, so their own types are
+`(T: type)(T)any` and `(T: type)(any)T` (4.3). Any type can be wrapped, an `any` included,
+except an ownership type `@X` itself (4.3).
+
+**(needs review) An `any` keeps the type of its first value.** Its size comes from the value
+inside (see "Underneath" below), and a value on the stack keeps its size (2.6). So a `var`
+`any` can be given a new value of the same type, and never a value of another type. It is the
+rule for an unsized array, which keeps its first length (5.3), and it is checked the same way.
+The compiler rejects the line when it sees both types: the name was declared with a call of
+`wrap` that it sees (7.2), such as `wrap(int)(3)`, and the new value is such a call too. In
+every other case the check is made while the program runs (11.2). The value inside follows its
+own rule as well: an `any` that holds a `[]int` of length 3 can only be given a `[]int` of
+length 3.
+
+```go
+var x: any = wrap(int)(3);
+x = wrap(int)(4);                  // fine: x still holds an int
+x = wrap(bool)(true);              // ERROR: x was declared with an int inside
+var y: any = wrap(bool)(true);     // fine: a new declaration, with its own first value
+
+const tryInt: (any)void = (var v: any){
+    var held: any = wrap(int)(0);
+    held = v;                      // checked while running: fails unless v holds an int
+};
+```
+
+#### Passing an `any`
+
+A function can take an `any`, so it can be called with a value of any type:
+
+```go
+const describe: (any)void = (const x: any){
+    x.T                    // the type it was given
+    ...
+};
+
+describe(wrap(int)(3));
+describe(wrap(bool)(true));
+describe(3);               // ERROR: describe takes an any; write wrap(int)(3)
+```
+
+#### Every wrap and unwrap is written out
+
+A value never turns into an `any` by itself, and an `any` can't be used where a fixed type
+is expected until you unwrap it:
+
+```go
+const double: (int)int = (const n: int){ return n * 2; };
+
+double(x);                 // ERROR: x is an any
+double(unwrap(int)(x));    // fine: the unwrap is written out
+```
+
+So every place where something could go wrong while running is visible in the code: each
+wrap is `wrap(int)(…)` and each unwrap is `unwrap(int)(…)`, `unwrap(bool)(…)` and so on.
+The type of everything that doesn't touch an `any` is checked before the program runs
+**(adjusted: "the type of")**. **(needs review)** The other checks made while running are about
+values, and Appendix B lists them. One of them is about a pair of types instead: a call of
+`convert` through a variable, with two types that have no conversion (4.4).
+
+#### What `any` is for
+
+- **Data whose shape you only learn while running:** a file or a message that says "the
+  next value is a bool".
+- **Choosing a type while running:** for example a small number type for small data and a
+  big one for big data.
+- **Reading the type inside:** `x.T` tells you what the `any` holds.
+
+#### Underneath
+
+An `any` is a struct of two things: the value's type and the value. Pictured as a struct:
+
+```go
+var x: any = wrap(int)(3);
+// pictured as a struct: the type, then a value of that type
+var x: {T: type, value: int} = {
+    T: type = int;                // x.T
+    value: int = 3;
+};
+
+var y: any = wrap(bool)(true);
+// a different shape inside, because the value is a bool
+var y: {T: type, value: bool} = {
+    T: type = bool;
+    value: bool = true;
+};
+```
+
+The second field's type depends on the first, so every `any` can have a different shape
+inside. An `any` sits on the stack like everything else. Its size depends on the value
+inside, so it's known when the `any` is made or passed in, the same as an unsized array
+whose length comes from its first value (5.3).
+
+#### `any` or generics?
+
+Both let one function work with many types:
+
+| | generic: takes a type (4.3) | `any` |
+|---|---|---|
+| call | you pass the type: `first(int)` | the type travels with the value: `describe(wrap(int)(3))` |
+| type known | before the program runs, when you write the type | only while it runs |
+| mistakes show up | before the program runs | when an unwrap like `unwrap(int)(x)` runs |
+| best for | the same code for many types | values whose type you only learn while running |
+
+### 4.6 A type that names itself **(needs review)**
+
+A type declared at the top level can use any top-level type, wherever it is declared, itself
+included (2.8). That is how a list node names the next node (8.14):
+
+```go
+const Node: type = {value: int, next: ^Node};   // fine: the next node is behind a ^
+const Even: type = {value: int, next: ^Odd};    // fine: Odd is declared below, and both are top-level types
+const Odd: type = {value: int, next: ^Even};
+```
+
+A value has a fixed size (2.6), so a type can't hold itself directly. It reaches itself
+through a pointer (`^`, `&` or `@`) or a function type. The size of each of those doesn't
+depend on the size of what it leads to:
+
+```go
+const Bad: type = {value: int, next: Bad};      // ERROR: a Bad would hold a Bad, which holds a Bad, without end
+const Rows: type = [2]Rows;            // ERROR: a Rows would hold two Rows, each holding two more
+const Step: type = (int)Step;          // fine: a function that returns a function of its own type
+```
+
+A type declared inside a function can name itself in the same way. Like every other name
+there, it is used only below its declaration (2.8).
+
+---
+
+## 5. Arrays
+
+### 5.1 Fixed and unsized
+
+```go
+const primes: [3]int = [2, 3, 5];       // fixed: exactly 3 elements
+var scores: []int = [10, 20, 30];       // unsized: the length comes from the first value (3)
+```
+
+| Type | Where the length comes from |
+|---|---|
+| `[3]int` | the type |
+| `[]int` | the first value it's given |
+
+The size between the brackets is a number, or nothing. A type can't go there:
+
+```go
+const sizes: [bool]int = [3, 10];       // ERROR: the size of an array is a number
+```
+
+An array holds values of one type, and that can be any type:
+
+```go
+const word: [4]char = ['C', 'a', 'r', 'l'];     // text is an array of chars
+const flags: [2]bool = [true, false];
+```
+
+**(needs review)** The size is a whole number written in the code (3.2), 0 or more. An array can
+be empty: `[]` is the array value with no elements, and it needs a place that says what its
+element type is (3.8).
+
+**(needs review)** Text has a shorter way to be written: `"Carl"` is the same array value as
+`['C', 'a', 'r', 'l']` (5.10).
+
+### 5.2 Reading and changing elements
+
+Elements are numbered from 0:
+
+```go
+primes[0]              // 2
+scores[2]              // 30
+scores[0] = 15;        // scores is now [15, 20, 30]
+primes[0] = 7;         // ERROR: primes is const
+```
+
+An element can be changed when the array is a `var`.
+
+**(needs review) An index is an `int`, and it is checked.** The first element is at 0 and the
+last is at `length - 1`. The compiler knows the length of an array when the length is in its
+type, and also when the array is a name that was declared with an array value written out,
+because an unsized array keeps its first length (5.3). When it knows the length and the index
+is a written value (3.2), the compiler checks the index. It also rejects a written index below
+0, whatever the length. Otherwise the check is made while the program runs, and an index out
+of range fails there (11.2):
+
+```go
+primes[3]              // ERROR: primes has length 3, so its last index is 2
+scores[5]              // ERROR: scores was declared with 3 elements
+scores[i]              // checked while running: fails if i is below 0 or above 2
+scores[small]          // ERROR: small is an int8, and an index is an int (3.2)
+```
+
+### 5.3 An unsized array keeps its first length
+
+The length of an unsized array is set by its first value and never changes:
+
+```go
+var a: []int = [1, 2, 3];
+a = [4, 5, 6];                 // fine: still 3 long
+a = [1, 2, 4, 5];              // ERROR: a has length 3
+var b: []int = [1, 2, 3, 4];   // fine: a new declaration, length 4
+```
+
+Because of this, a function can take or return an unsized array of any length:
+
+```go
+const firstOf: ([]int)int = (const values: []int){
+    return values[0];
+};
+firstOf([7, 8])        // 7
+firstOf([1, 2, 3, 4])  // 1
+```
+
+**(needs review) When a length is only known while running, the check is made while running.**
+The compiler rejects `a = [1, 2, 4, 5];` above because it knows both lengths: it knows the
+length of `a` (5.2), and the new value is an array value written out. In every other case,
+giving an unsized array a value of another length fails while the program runs (11.2):
+
+```go
+var part: []int = a[0:2];      // length 2
+part = a[1:n];                 // checked while running: fails unless n is 3
+```
+
+**(needs review) Every holder of an unsized array has its own first value.** A name, a field, an
+element, a map entry, a value of a pair and a value on the heap each take their length from the
+first value they hold, and keep it. A parameter and a result get a new first value at every
+call. The same holds for every type whose size isn't in the type: a map (6.3) and an `any`
+(4.5). Underneath, the elements of such an array aren't all one size. Each element holds its own
+size (the length of a `[]T`, the keys of a map, the type inside an `any`), and finding element
+`i` means stepping over the elements in front of it.
+
+```go
+var rows: [2][]int = [[1, 2, 3], [4]];     // two rows: one of length 3, one of length 1
+rows[1] = [9];                             // fine: still 1 long
+rows[1] = [9, 9];                          // fails while running: rows[1] has length 1
+```
+
+**(needs review)** A fixed array and an unsized array are different types, and a value never
+changes type by itself (3.2). A fixed array becomes an unsized one through a slice (5.9):
+`primes[:]` is a copy of `primes` as a `[]int`, and `&primes[:]` borrows it as an `&[]int`.
+
+### 5.4 Arrays inside arrays
+
+```go
+const grid: [2][3]int = [[1, 2, 3], [4, 5, 6]];
+grid[1][2]             // 6: row 1, element 2
+grid[0]                // [1, 2, 3]: the whole first row
+```
+
+### 5.5 Reading the length
+
+`.length` reads an array's length. It can't be assigned, because the length never changes:
+
+```go
+const primes: [3]int = [2, 3, 5];
+var scores: []int = [10, 20, 30];
+
+primes.length          // 3: from the type [3]int
+scores.length          // 3: from the first value
+scores.length = 4;     // ERROR: a length never changes
+```
+
+**(needs review)** A length is an `int`.
+
+### 5.6 Passing an array to a function
+
+There are two ways, and both the type and the call say which one is happening:
+
+```go
+const sumCopy: ([]int)int = (const v: []int){ ... };        // v is a copy of the array
+const sumBorrow: (&[]int)int = (const v: &[]int){ ... };    // v borrows the caller's array
+
+sumCopy(scores);       // copies all of scores, like every declaration (2.4)
+sumBorrow(&scores);    // no copy: v borrows scores (8.4)
+```
+
+Inside `sumBorrow` the array is `v~`: `v~[0]` is its first element and `v~.length` is its
+length.
+
+### 5.7 Underneath: an array is like a struct
+
+An array is like a struct whose fields all have the same type and are reached by position
+instead of by name:
+
+```go
+var a: [3]int = [10, 20, 30];     // like a struct with three int fields
+a[1]                              // the second field, by position
+```
+
+- **A fixed array `[3]int`** is exactly that: three `int` fields one after another. Its
+  length is in the type, so it isn't stored anywhere. `a.length` is just the 3 from `[3]`.
+- **An unsized array `[]int`** is like a struct of its length followed by its elements. The
+  type doesn't say how long it is, so the length is stored in the value, which is why
+  `.length` reads like a field: for `[]int` it really is one.
+
+Either way an array has a length you know, and it's fixed. Written out as structs, just to
+picture them (you never write arrays this way, and the field names are only labels):
+
+```go
+var a: [3]int = [10, 20, 30];
+// pictured as a struct: three int fields; the length 3 is fixed by the type [3]int
+var a: {at0: int, at1: int, at2: int} = {
+    at0: int = 10;                // a[0]
+    at1: int = 20;                // a[1]
+    at2: int = 30;                // a[2]
+};
+
+var b: []int = [7, 8];
+// pictured as a struct: the length is stored, then the elements
+var b: {length: int, elements: [2]int} = {
+    length: int = 2;              // b.length: set by the first value, and it never changes
+    elements: [2]int = [7, 8];
+};
+```
+
+In both, the length is known and it never changes.
+
+### 5.8 A pair: `?T`
+
+`?T` is a pair: exactly two values of type `T`, one for `false` and one for `true`, looked up
+with a `bool`. It is written like an array of two, the value for `false` first, and its type
+comes from the declaration, the same way `5` takes the type of the place it's written (3.2):
+
+```go
+const sizes: ?int = [3, 10];           // the value for false, then the value for true
+sizes[false]                           // 3
+sizes[true]                            // 10
+
+const big: bool = count > 10;
+sizes[big]                             // 3 or 10, picked by big
+```
+
+A pair is always looked up with a `bool`, and an array with a number:
+
+```go
+sizes[1]                               // ERROR: a pair is looked up with a bool
+primes[true]                           // ERROR: a [3] array is indexed with a number
+```
+
+A pair always has both values, so a lookup never fails.
+
+**(needs review)** The two values of a pair are held like the elements of an array (5.7). So
+with `var limits: ?int = [3, 10];`, a value can be given a new value, `limits[true] = 12;`,
+and it can be borrowed, `&limits[big]`.
+
+**(needs review)** A pair value is written with exactly two values, and a pair has no `.length`,
+because the answer is always two:
+
+```go
+const three: ?int = [1, 2, 3];         // ERROR: a pair has two values
+sizes.length                           // ERROR: a pair has no length
+```
+
+Underneath, a pair is just an array of two, a `[2]T`, the same way a `bool` is just a number
+underneath (3.1). Looking it up with `false` takes the first value and with `true` the second,
+because `false` is 0 and `true` is 1. The types keep the two apart in the code.
+
+Its main use is choosing (section 10).
+
+### 5.9 Slices: borrowing part of an array
+
+`&a[i:j]` borrows the elements of `a` from index `i` up to, but not including, index `j`. Its
+type is `&[]T`, the same type as a borrower of a whole unsized array (5.6), so a function that
+takes an `&[]int` takes either:
+
+```go
+var scores: []int = [10, 20, 30, 40];
+
+const middle: &[]int = &scores[1:3];   // borrows 20 and 30
+middle~[0]                             // 20
+middle~.length                         // 2
+
+sumBorrow(&scores[1:3])                // 50: no copy (5.6)
+```
+
+| You write | It borrows |
+|---|---|
+| `&a[1:3]` | elements 1 and 2 |
+| `&a[1:]` | from element 1 to the end |
+| `&a[:2]` | elements 0 and 1 |
+| `&a[:]` | the whole array. When `a` is unsized it is the same as `&a`. When `a` is fixed, `&a` is an `&[3]T` and `&a[:]` is the `&[]T` **(adjusted)** |
+
+A slice is a borrower, so everything in section 8 holds for it. A `var` slice can change the
+elements it borrows, a slice of a `const` array is a `const` borrower (8.6), it can't outlive
+the array (8.5), and an array on the heap can't be freed or moved away while a slice of it is
+used further down (8.12) **(adjusted)**:
+
+```go
+var front: &[]int = &scores[:2];
+front~[0] = 99;                        // scores is now [99, 20, 30, 40]
+```
+
+A slice of a slice borrows from the same array: `&middle~[1:]` borrows `30`.
+
+**(needs review)** The two bounds are `int`s, like an index (5.2). A bound that is left out is
+0 at the start and the length at the end.
+
+**Without the `&`, it is a copy.** `a[1:3]` on its own gives the elements as a new unsized
+array, the same way every `=` copies (8.8):
+
+```go
+var part: []int = scores[1:3];         // part is its own [20, 30]
+part[0] = 5;                           // scores doesn't change
+```
+
+**The bounds are checked.** The start can't be after the end, and the end can't be past the
+length. **(needs review)** The start can't be below 0 either. **(adjusted)** When both are written
+values and the compiler knows the length (5.2), the compiler checks them, and a bound that is
+left out counts as written. Otherwise the check is made while the program runs, and a slice out
+of range fails there. **(needs review)** A written start that is below 0, or after a written end,
+is rejected whatever the length:
+
+```go
+const primes: [3]int = [2, 3, 5];
+&primes[2:1]                           // ERROR: the start is after the end
+&primes[0:5]                           // ERROR: primes has length 3
+&scores[1:n]                           // checked while running: fails if n is below 1 or over 4 (adjusted)
+```
+
+**Underneath, a slice is two numbers:** the address of its first element and how many
+elements it borrows. Every `&[]T` is held this way, a borrower of a whole array too, so the
+same function takes both. That is why `.length` works on it like on any unsized array, and why
+nothing is copied.
+
+### 5.10 Text **(needs review)**
+
+Text is an array of `char`s (5.1). There is no separate text type, so
+everything an array does, a text does.
+
+**Writing it.** `"Carl"`, between two `"`, is the array value `['C', 'a', 'r', 'l']` written
+shorter. Like every array value, it takes its type from its place (3.8):
+
+```go
+const word: [4]char = "Carl";          // the same as ['C', 'a', 'r', 'l']
+var name: []char = "Carl";             // unsized: length 4, from the first value
+const empty: []char = "";              // a text with no chars
+const wrong: [3]char = "Carl";         // ERROR: "Carl" has 4 chars
+```
+
+- A text holds exactly the `char`s that are written. Nothing is added at the end: its length
+  is in its type or stored with it, like every array's (5.7).
+- A text is written on one line. A line break inside it is written `\n` and a `"` inside it
+  is written `\"`, with the escapes from 3.2.
+- A character outside ASCII is held as its UTF-8 bytes, one `char` each: `"é".length` is 2.
+
+**Using it.** Every one of these is an array rule or a built-in function:
+
+| You want | You write |
+|---|---|
+| its length | `name.length` (5.5) |
+| one `char` of it | `name[0]` (5.2) |
+| to change one `char` | `name[0] = 'M';` when it is a `var` (5.2) |
+| a part of it | `name[1:3]` for a copy, `&name[1:3]` to borrow (5.9) |
+| to compare two texts | `name == "Carl"` (3.7) |
+| to compare two `char`s | `name[0] < 'a'` (3.2) |
+| to join two texts | `join(char)(name, "!")` (5.11) |
+| to print it | `print(name);` (11.3) |
+| a number as text, and back | `convert(int, []char)(42)`, `convert([]char, int)("42")` |
+
+**Numbers as text.** `convert` (4.4) goes between a number or a `bool` and the text type
+`[]char`:
+
+| Conversion | Gives |
+|---|---|
+| `convert(int, []char)(n)`, for any whole-number type | the number in base ten, with a `-` in front when it is negative: `"42"`, `"-7"`, `"0"` |
+| `convert(float, []char)(f)`, for either float type | the shortest text that reads back as the same float, always with a decimal point: `"9.5"`, `"3.0"`, `"-0.25"` |
+| `convert(bool, []char)(b)` | `"true"` or `"false"` |
+| `convert([]char, int)(t)`, for any whole-number type | the number written in `t`: digits in base ten, with or without a `-` in front |
+| `convert([]char, float)(t)`, for either float type | the float nearest to the number written in `t`: written like a float in the code (3.2), with or without a `-` in front, and the decimal point can be left out |
+| `convert([]char, bool)(t)` | `true` for `"true"` and `false` for `"false"` |
+
+A float that is `1.0e21` or more away from zero, or closer to zero than `1.0e-6` without
+being zero, is written with a power of ten: `"1.5e21"`, `"2.0e-7"`. Zero is `"0.0"`, and
+`-0.0` is `"-0.0"`.
+
+The exact forms, in the notation of Appendix A:
+
+```
+whole number as text = [ "-" ] Digit { Digit }
+float as text        = [ "-" ] Digit { Digit } [ "." Digit { Digit } ] [ ( "e" | "E" ) [ "+" | "-" ] Digit { Digit } ]
+```
+
+Reading takes any text of these forms: `"007"` is 7, `"-0"` is 0, and `"1e5"` is `100000.0`.
+Writing gives a whole number with no zeros in front, and a float with a digit on both sides
+of the point. With a power of ten, exactly one digit stands in front of the point.
+
+Going from text to a value is checked when the line runs, like every conversion that might
+not fit (4.4). It fails when the text isn't written as the table says, or when the number
+doesn't fit in the type:
+
+```go
+convert([]char, int)("12a")            // fails while running: "12a" isn't a whole number
+convert([]char, int)(" 12")            // fails while running: a space isn't a digit
+convert([]char, uint8)("300")          // fails while running: 300 doesn't fit in a uint8
+convert([]char, int)(word[:])          // 4 chars that aren't digits: fails while running too
+```
+
+A text held in a fixed array is converted through a slice, `word[:]`, because the conversion
+takes a `[]char` (5.3).
+
+### 5.11 Joining two arrays: `join` **(needs review)**
+
+An array never grows (5.3). `join` makes a new one. It is a built-in function
+that takes a type and gives back the function that joins two unsized arrays of that type: the
+result is a new unsized array holding the elements of the first, then the elements of the
+second.
+
+```go
+join(char)("Carl", "son")              // "Carlson"
+join(int)([1, 2], [3])                 // [1, 2, 3]
+
+var name: []char = "Carl";
+var hello: []char = join(char)("Hello, ", name);       // "Hello, Carl"
+```
+
+| You write | Its type | What it does |
+|---|---|---|
+| `join(char)` | `([]char, []char)[]char` | joins two texts |
+| `join(int)` | `([]int, []int)[]int` | joins two arrays of `int`s |
+
+- `join` itself has the type `(T: type)([]T, []T)[]T` (4.3). It works for every element type.
+- Both arrays are copied into the new one, like every argument (7.2). The two originals don't
+  change.
+- A fixed array is given as a slice: `join(int)(primes[:], [7])`.
+
+A `var` unsized array keeps its first length (5.3), so a longer result goes into a new
+declaration. A list that grows is a heap owner that is given a new, longer array each time:
+
+```go
+var all: ^[]int = ^[1, 2];
+all = ^join(int)(all~, [3]);           // a new heap array [1, 2, 3]: the old one is freed (8.8)
+all~.length                            // 3
+```
+
+---
+
+## 6. Maps
+
+### 6.1 Making a map
+
+The type is `{KeyType}ValueType`, and the value lists `key: value` pairs:
+
+```go
+var seen: {int}bool = {1: true, 4: false};
+const pairs: {int}[2]int = {1: [1, 2], 2: [3, 4]};
+```
+
+**(needs review) A key can have any type.** A lookup finds its key with `==`, and every type can
+be compared with `==` (3.7). So a `char`, a text, a struct or a `type` can be a key, as well
+as a number.
+
+**(needs review) The keys of a map value all differ.** The compiler checks keys that are written
+values (3.2). Keys that are worked out while the program runs are checked then, and two equal
+keys fail there (11.2):
+
+```go
+const doubled: {int}bool = {1: true, 1: false};    // ERROR: the key 1 is written twice
+const mixed: {int}bool = {a: true, b: false};      // checked while running: fails if a equals b
+```
+
+**(needs review)** A map can be empty: `{}` is the map value with no entries. It needs a place
+that says what its key and value types are (3.8).
+
+### 6.2 Reading and changing entries
+
+```go
+seen[4]                // false
+seen[4] = true;        // change an existing entry
+pairs[2][0]            // 3: the entry for key 2, then its first element
+pairs[1] = [0, 0];     // ERROR: pairs is const
+```
+
+An entry can be changed when the map is a `var`.
+
+**(needs review) A lookup is checked.** A map's keys never change (6.3). So when a map is a name
+declared with a map value whose keys are all written values (3.2), the compiler knows them,
+and it rejects a lookup with a written value that isn't one of them. In every other case the
+check is made while the program runs, and a key that isn't in the map fails there (10.2,
+11.2):
+
+```go
+seen[7]                // ERROR: 7 isn't a key of seen
+seen[k]                // checked while running: fails unless k is 1 or 4
+```
+
+### 6.3 A map has a fixed size
+
+A map's keys are set by its first value and never change, just like an array's length:
+
+```go
+seen[1] = false;       // fine: 1 is a key
+seen[7] = true;        // ERROR: 7 isn't a key, and the map can't grow
+seen.length            // 2: the number of keys
+```
+
+**(needs review)** The length is an `int`, like an array's (5.5).
+
+**(needs review) A whole new value needs the same keys.** A `var` map can be given a new map
+value, and that value has to have exactly the keys the map already has, in any order. The
+compiler checks it when it knows the map's keys (6.2) and the new value is a map value whose
+keys are all written values. Otherwise the check is made while the program runs (11.2). It is
+the rule for an unsized array, which keeps its first length (5.3). The map keeps its keys
+where they are: each new value goes to the entry with its key, so a borrower of an entry
+still leads to the same key.
+
+```go
+seen = {4: true, 1: false};    // fine: the same two keys
+seen = {1: false};             // ERROR: seen has the keys 1 and 4
+```
+
+### 6.4 Underneath: a map is like a struct too
+
+A map is like a struct whose fields are its keys: `{1: true, 4: false}` holds a value for
+key `1` and a value for key `4`, side by side on the stack. A struct's fields are fixed by
+its shape, and a map's keys are fixed by its first value, so neither can gain a new one.
+
+Pictured as a struct (field names only as labels):
+
+```go
+var seen: {int}bool = {1: true, 4: false};
+// pictured as a struct: each key, then its value
+var seen: {key0: int, value0: bool, key1: int, value1: bool} = {
+    key0: int = 1;   value0: bool = true;     // seen[1]
+    key1: int = 4;   value1: bool = false;    // seen[4]
+};
+```
+
+The keys never change, and the values can when the map is a `var`. That's why
+`seen[4] = true;` works but `seen[7] = true;` doesn't: there's no field for key 7.
+
+**(needs review)** The entries are held in the order they were written, with their number in
+front of them, the way an unsized array holds its length (5.7). A lookup compares its key
+with the map's keys (3.7), and takes the value that sits beside the key that is equal.
+
+---
+
+## 7. Functions
+
+### 7.1 Writing a function
+
+The **type** lists the parameter types, then the return type. The **value** lists the
+parameters, each declared like a name, then the body:
+
+```go
+const add: (int, int)int = (const x: int, const y: int){
+    return x + y;
+};
+```
+
+| Piece | Here |
+|---|---|
+| type | `(int, int)int` |
+| parameters | `(const x: int, const y: int)`: in the same order as the types |
+| body | `{ return x + y; }` |
+
+`return value;` ends the function and gives back the value.
+
+**A function that returns a value has to reach a `return` on every path.** The compiler
+rejects a function that can get to the end of its body without one. A function that returns
+nothing ends at the end of its body, or earlier at a `return;` (7.3).
+
+**(needs review) What "every path" comes down to.** No statement branches, so a body runs
+straight down, into each block inside it, until it meets a `return`. A function that returns
+a value therefore needs a `return` among the statements of its body, or of a block inside
+the body. What is written after that `return` never runs. The compiler accepts it, as most
+languages do.
+
+```go
+const one: ()int = (){
+    {
+        return 1;              // the body runs into this block and meets the return
+    }
+};
+
+const none: ()int = (){
+    show(1);
+};                             // ERROR: the body ends without a return
+```
+
+(`show` is the function from 7.3.)
+
+**(needs review) A function value is checked against its type.** It has as many parameters as
+the type lists, each with the type listed at its position, and every `return` in it gives a
+value of the return type. A function value written where nothing asks for a type takes its
+return type from what its `return`s give (3.8).
+
+### 7.2 Calling a function
+
+```go
+add(1, 2)              // 3
+```
+
+Each argument is copied into its parameter (2.4). To let a function use the caller's value
+itself, the parameter borrows it (8.4): `bump(&n)`.
+
+A call works out all of its arguments first, from left to right. Then it sets the
+parameters, from left to right. So one argument can't change what another argument reads
+(8.13).
+
+**(needs review)** That is about the taking: no parameter takes its argument over while another
+argument is still being worked out. An argument that is a call still runs in its turn, so in
+`f(next(), i)` the `i` is read after `next()` has run (2.9).
+
+**(needs review)** A call gives exactly one argument for each parameter, and each argument has
+the type of its parameter (3.8). The value in front of the `(` is worked out before the
+arguments (2.9):
+
+```go
+add(1)                 // ERROR: add takes two ints
+add(1, true)           // ERROR: the second argument is a bool, and add takes an int
+```
+
+**(needs review) Which function a call runs.** Several rules depend on whether the compiler can
+tell which function a call runs (4.3, 4.4, 4.5, 7.8, 8.5, 8.6, 8.12, 9.3, 11.1).
+Where the docs say that a function is *called by its own name*, they mean one of these cases,
+in which the compiler sees the function:
+
+| The value in front of the `(` | The compiler sees |
+|---|---|
+| the name of a `const` that was declared with a function value written out, as in `add(1, 2)`. Inside the body of such a function, its own name counts too | that function |
+| a function value written out and called on the spot: `(const n: int){ return n + 1; }(3)` | that function |
+| a built-in, or what a built-in gives back, as in `convert(float, int)(x)` and `wrap(int)(3)` | what the built-in does |
+| what a call from this table gives back, when the function that is called gives back a function value written in its body, directly or through a `const` of the body that was declared with it: `first(int)(xs)`, `makeAdder(1)(2)` | that function value |
+| the name of a `const` that was declared with one of the rows above, or with another name of this row: `const plus: Op = add;`, `const wrapInt: (int)any = wrap(int);`, `const firstInt: ([]int)int = first(int);` | the same function |
+| a function field of a `const` struct that was declared with its block written out, when the field's value is a function value written out (9.3) | that function |
+
+A lookup is a call the compiler sees too: a lookup in a `const` array, pair or map that was
+declared with every element written out, each one a function value or a name from the table,
+such as `cases[n == 0](n)`. The compiler sees every function the lookup could give, and it
+counts the worst that any of them does. Every choice is a lookup (section 10), so choosing this
+way costs nothing in what the compiler knows.
+
+**(needs review)** In every other case the call goes *through a variable*: a `var`, a parameter,
+a field, any other result of a call, or a `const` that was declared in any other way. Then
+the compiler knows only the type.
+
+A call through a variable is checked while the program runs, the same way as a `const` that is
+lent to one (8.6): the call reads the note beside the code of the function that the variable
+really holds (7.7). A function written somewhere else never makes a line a compile error.
+
+**(needs review)** Four rules read the note in this way while the program runs: a `const` that a
+call would change (8.6), a copy of a function that keeps something (7.8), what a call does to
+the variables outside it (8.12), and a top-level name that a call reaches before it is set up
+(11.1). What the line and the type decide by themselves is still counted before the program
+runs, as the worst case: a `&` argument counts as one that may change (8.12), and a result
+whose type can hold a function counts as having a kept block (7.8). So is the rule that every
+type is known before the program runs (4.3), which can't wait for it. None of these turns a line
+away because of which functions of that type the program has.
+
+### 7.3 A function that returns nothing
+
+Its return type is `void`:
+
+```go
+const show: (int)void = (const value: int){
+    ...
+};
+show(5);
+
+const hello: ()void = (){      // takes nothing, returns nothing
+    ...
+};
+hello();
+```
+
+`return;` on its own ends it where it stands:
+
+```go
+const greet: ()void = (){
+    show(1);
+    return;                    // greet ends here
+};
+```
+
+A function that returns nothing never gives a value back, and a function that returns a
+value always does:
+
+```go
+const nothing: ()void = (){
+    return 5;                  // ERROR: nothing returns nothing
+};
+
+const half: (int)int = (const n: int){
+    return;                    // ERROR: half returns an int: write the value
+};
+```
+
+**(needs review)** A call to a function that returns nothing has no value (3.8), so it can't be
+given back either. `return hello();` is an error in every function: write `hello();` and then
+`return;`.
+
+### 7.4 Parameters are declared like names
+
+Each parameter is `const` or `var` with a name and a type, like a declaration:
+
+```go
+const countDown: (int)int = (var n: int){
+    n = n - 1;         // fine: n is a var parameter, a copy of what was passed
+    return n;
+};
+
+var start: int = 5;
+countDown(start)       // 4
+start                  // still 5: countDown changed its own copy
+```
+
+| Parameter | What the function gets |
+|---|---|
+| `const x: int` | a copy it can't change |
+| `var x: int` | a copy it can change |
+| `const x: &int` | the caller's value, borrowed to read (8.6) |
+| `var x: &int` | the caller's value, borrowed to change (8.4) |
+| `var x: ^int` | a heap value of its own: a copy of the caller's (8.13) |
+| `var @x: ^int` | the caller's own heap value: the parameter takes it over at the call (8.13) |
+
+`const` and `var` on a parameter don't appear in the function's type. Borrowing, the heap and
+ownership do: `(&int)void`, `(^int)void`, `(@^int)void`. A parameter written `@x: ^int`
+shows as `@^int`, because that is what the call has to give (8.13).
+
+### 7.5 Swapping a function in a `var`
+
+A function held in a `var` can be replaced by another function of the same type:
+
+```go
+var op: (int, int)int = (const x: int, const y: int){
+    return x + y;
+};
+op(2, 3)               // 5
+op = (const x: int, const y: int){
+    return x * y;
+};
+op(2, 3)               // 6
+```
+
+### 7.6 Functions as values
+
+A function goes everywhere any other value goes:
+
+```go
+const sub: (int, int)int = (const x: int, const y: int){
+    return x - y;
+};
+
+// in an array
+const ops: [2](int, int)int = [add, sub];
+ops[1](5, 3)                   // 2
+
+// in a map
+const byKey: {int}(int, int)int = {1: add, 2: sub};
+byKey[1](2, 2)                 // 4
+
+// passed in
+const twice: ((int)int, int)int = (const f: (int)int, const x: int){
+    return f(f(x));
+};
+const double: (int)int = (const x: int){
+    return x * 2;
+};
+twice(double, 3)               // 12
+
+// returned
+const pick: ((int)int)(int)int = (const f: (int)int){
+    return f;
+};
+pick(double)(5)                // 10
+
+// returning an array
+const three: (int)[3]int = (const x: int){
+    return [x, x, x];
+};
+three(7)[0]                    // 7
+```
+
+### 7.7 Underneath: a function value is two addresses
+
+A function value is the address of the function's code. Storing a function in a name, an
+array or a map stores that address, and calling it jumps there:
+
+```go
+const ops: [2](int, int)int = [add, sub];   // two functions: the addresses of their code
+ops[1](5, 3)                                // jumps to sub's code
+```
+
+Copying a function value copies the address, not the code.
+
+A function that uses variables from around it (7.8) also keeps their addresses, and a function
+given back by a call keeps the parameters it uses from that call. These are kept with the
+function out of sight, and its type is the same either way.
+
+**A function value is always two addresses:** one for the code, and one that points at the
+function's kept block. The kept block holds the parameters that a function given back keeps
+(7.8). A function with nothing kept leaves the second address empty. So every `(int)int` has
+the same size, and functions given back go in arrays and maps like any other function of
+their type:
+
+```go
+var one: int = 1;
+var two: int = 2;
+const steps: [3](int)int = [makeAdder(one), makeAdder(two), double];   // makeAdder: 7.8
+
+steps[0](5)            // 6
+steps[1](5)            // 7
+steps[2](5)            // 10
+```
+
+**The kept block lives on the stack, in the frame of the call that receives the new
+function.** The function value only points at it. The size of a kept block differs from
+function to function, but the block sits in the frame, and not in the variable. The two kept
+blocks above sit in the frame that declares `steps`, so `steps` can't outlast that frame (7.8).
+
+**Underneath.** A frame makes room for a kept block while the program runs, the way `alloca`
+does in C, because a call through a variable can't know the size of the block beforehand. The
+block stays in the frame until that call ends. **(needs review)** The note beside the function's
+code (below) says how big its kept block is. When a kept parameter has a type with no size in
+it (5.3), the size differs from call to call, so the block holds its own size, the way an
+unsized array holds its length (5.7).
+
+**(needs review) What the second address is.** One address is always enough:
+
+| The function | Its second address |
+|---|---|
+| uses only its own parameters and names, built-ins, types, top-level names and names of a block written at the top level | empty: it keeps nothing |
+| uses names of a function call around it that is still running (7.8) | that call's frame |
+| was given back by a call and keeps parameters of it (7.8) | its kept block |
+
+A function given back that keeps only one borrower, under the conditions of 7.8, has no kept
+block: its second address is the address that was lent, and a function that it gives back holds
+the same address.
+
+**(needs review)** A top-level name needs no address. It has one place for the whole program, and
+every function knows where that is (11.1). A function that uses only top-level names keeps
+nothing, and it can go wherever a function value can. A name of a block written at the top
+level of the file is found in the same way. A function that uses one keeps nothing either, but
+it can't outlive the block (7.8).
+
+**(needs review)** A frame or a kept block also holds the address of the frame or the block
+around it, when the function uses names from there. So a function inside a function reaches
+everything it can see through one address.
+
+**(needs review)** A type parameter that is a type name (4.2) takes no room in a kept block. The
+type is known before the program runs, so the function that comes back is simply the one made
+for that type. A function that keeps nothing else has no kept block, and its second address is
+empty: `first(int)` (4.3) is copied and stored like `double`.
+
+**A note beside the code.** For every function, the compiler stores a short note in the
+program, beside the function's code. It says which of the function's `&T` parameters are
+`var`, and whether the function keeps anything. A call through a variable that lends a `const`
+reads the note of whichever function the variable holds (8.6), and so does a copy of a
+function that the compiler can't see (7.8). The note is stored with the code, not in the
+value, so a function value is still two addresses.
+
+The note also says which outside variables the function changes, takes, gives a new target to
+or follows, so that a call through a variable can check what it does (8.12). For a function
+that itself calls through a variable, the note is fail safe.
+
+**(needs review)** The note says the same for every other parameter, because a value with a
+borrower inside it follows the rule for a borrower (8.6). It counts what the functions it calls
+by name do, the way 8.12 reads them, and it says which top-level names the function uses
+(11.1). A function that calls through a variable can't know what that call does, unless the
+function it calls came in through a parameter (8.5): then its caller counts that function
+itself (8.12). In every other case the note is fail safe: on top of what the function's own
+lines do, it says that the function changes, takes and follows every variable outside it, of
+every type, and that it uses every top-level name. So is the note of a function that calls
+such a function by name.
+
+### 7.8 Using a variable from outside the function
+
+A function's body is a block (2.6), and a block sees the names of the blocks around it. So
+a function can use names declared outside it, and it can change a `var` from outside:
+
+```go
+var count: int = 0;
+
+const countUp: ()void = (){
+    count = count + 1;         // changes a variable declared outside the function
+};
+
+countUp();
+countUp();
+count                          // 2
+```
+
+**A function borrows the variables it uses from around it.** It uses the variable itself, not a
+copy, so its changes reach the variable. That holds for a function made inside another
+function too:
+
+```go
+const addTwo: (int, int)int = (const a: int, const b: int){
+    var sum: int = 0;
+    const add: (int)void = (const x: int){
+        sum = sum + x;         // add borrows sum, so this changes addTwo's sum
+    };
+    add(a);
+    add(b);
+    return sum;
+};
+
+addTwo(4, 5)                   // 9
+```
+
+The call doesn't show it: nothing on the line `countUp();` says that `count` changes. A
+change made through a parameter does show at the call, with `&` or `@` (8.9).
+
+The compiler works out which outside variables a function changes or takes, and counts a
+call to it as changing them (8.12).
+
+**A variable that a function uses can't die before the function.** It is the same rule as
+for a borrower (8.5). A top-level variable lasts as long as the program, so a function can
+always use one. A variable declared inside a function dies when that call ends, so a
+function that uses it can't be given back, or stored in something that lasts longer:
+
+```go
+const makeBroken: ()()int = (){
+    var x: int = 5;
+    return (){ return x; };    // ERROR: x dies when this call ends, before the function that uses it
+};
+```
+
+**A function given back keeps the parameters it uses.** It keeps them in its kept block (7.7).
+Each kept parameter lives on there, as it was when the call ended:
+
+```go
+const makeAdder: (int)(int)int = (const step: int){
+    return (const n: int){ return n + step; };   // fine: the function keeps step
+};
+
+var five: int = 5;
+var addFive: (int)int = makeAdder(five);         // the kept step is a copy of five, in a block in this frame
+addFive(2)                     // 7
+makeAdder(1)(2)                // 3
+var addTen: (int)int = makeAdder(10);            // fine: the block holds its own 10 (adjusted)
+```
+
+A `var` parameter it keeps can still change, and the change stays for the next call:
+
+```go
+const makeCounter: (int)()int = (var count: int){
+    return (){
+        count = count + 1;
+        return count;
+    };
+};
+
+var start: int = 0;
+var next: ()int = makeCounter(start);
+next()                         // 1
+next()                         // 2
+```
+
+**A function with kept state is a borrower of its kept block.** The block lives in the frame
+of the call that receives the new function (7.7), and the ordinary rules for a borrower hold
+for the function (8.5), with no new ones:
+
+- It can't be stored somewhere that outlasts the block.
+- Sharing it uses `&`.
+
+Copying it is an error as well. That comes from the rule for `=`, further down, and not from
+the rules for a borrower.
+
+**Returning it hands the block back one frame,** the same way returning any value copies it
+out to the caller. `return` is already the mark that a value goes back, so it needs no `@`, the
+same as returning a struct.
+
+**To keep it longer than the frame, use `^`.** `^makeAdder(five)` puts the function on the
+heap, kept block included. Heap use only happens where `^` is written, and the block is freed
+with its owner.
+
+```go
+var keep: (int)int = double;
+var keepLong: ^(int)int = ^makeAdder(five);    // on the heap, kept block included
+var topStep: int = 5;
+
+keepLong~(2)                       // 7: the function that keepLong owns
+
+const adderOn: (&int)(int)int = (const step: &int){
+    return (const n: int){ return n + step~; };   // keeps step: a borrower of what the caller lends
+};
+
+const install: ()void = (){
+    keep = makeAdder(five);        // ERROR: keep outlasts install's frame, where step lives
+                                   // (the same error as storing a borrower of a local in a top-level var)
+    keepLong = ^makeAdder(five);   // fine: the function goes on the heap, with its kept block
+    keep = adderOn(&topStep);      // fine: topStep is a top-level variable that both sides borrow
+};
+
+keep = makeAdder(five);            // fine at the top level: this frame lasts the whole program
+
+const handOn: ()(int)int = (){
+    return makeAdder(five);        // fine: the kept block is handed back one frame
+};
+```
+
+At the top level, storing the function is fine for the same reason that borrowing a top-level
+variable is: that frame lasts the whole program. It is one rule, and not a rule that depends on
+where the line is.
+
+**A function that keeps only one borrower has no kept block.** `adderOn(&topStep)`
+gives back a function that keeps nothing of its own: all it keeps is the address that was lent.
+That address is its second address (7.7). So the function is a borrower of `topStep`, and not of
+a block in a frame, and it can go wherever a borrower of `topStep` can. That is why `install`
+can store it in `keep`. It holds when all of these do:
+
+- The function keeps exactly one parameter, and it uses no name of a function call around it.
+- That parameter is a borrower that is one address: any `&T` except an `&[]T`, which holds two
+  things (8.18).
+- No line points the parameter at something else: not in this function, and not in any other
+  function that uses the parameter. A `const` parameter never is.
+
+In every other case the function has a kept block, as `makeAdder(five)` has,
+and it can't be stored where it outlasts the frame that holds the block. A function that keeps
+two borrowers is such a case, and so is one whose borrower is a `var` that it points at
+something else:
+
+```go
+const sumOn: (&int, &int)()int = (const a: &int, const b: &int){
+    return (){ return a~ + b~; };     // keeps two borrowers, so it has a kept block
+};
+
+const installSum: ()void = (){
+    var total: ()int = sumOn(&topStep, &topStep);   // fine: total ends with this frame
+    total()                                         // 10
+    keepSum = sumOn(&topStep, &topStep);            // ERROR: keepSum outlasts this frame, where the block is
+};
+```
+
+(`keepSum` is a top-level `var` of type `()int`.)
+
+**Copying a function that keeps parameters is an error.** `=` makes a complete copy everywhere
+(8.8), and a copy of a function with kept parameters would share them with the original, which
+is hidden sharing with no `&`. To have two names on one counter, borrow it, like any shared
+value:
+
+```go
+var again: ()int = next;       // ERROR: next keeps parameters, so a copy would share them
+var again: &()int = &next;     // fine: again borrows next, and both use one counter
+again~()                       // 3
+next()                         // 4
+```
+
+(The first two lines are two ways to write one declaration. A program has one of them.)
+
+A function that keeps nothing copies as normal. A function's type doesn't say whether it keeps
+anything, so the check follows the pattern of the `const` check (8.6): the compiler rejects the
+copy where it can see the function, and otherwise the copy fails while the program runs (11.2),
+using the note beside the function's code (7.7).
+
+The details of that check:
+
+- **What keeps something.** A function keeps something when its second address isn't empty
+  (7.7): it keeps parameters, or it uses names of a function call around it. The second kind
+  borrows those names in the same hidden way, so the rule covers both. Only a function that
+  uses nothing but its own parameters and names, built-ins, types, top-level names and names of
+  a block written at the top level copies as normal.
+- **What a copy is.** Every place where `=` would copy the function value: a declaration, an
+  assignment, an argument that goes to a parameter, `^` in front of a name, a name written
+  inside an array, pair, map or struct value, and a move, which copies a plain value (8.9). A
+  copy of a bigger value that holds such a function is a copy of the function too.
+- **What is not a copy.** A value that nothing else holds is taken (8.8): the result of a
+  call, a function value written on the spot, and a local or a parameter that its function
+  returns. Returning any other name is a copy. Borrowing the function with `&` copies nothing,
+  and neither does calling it.
+- **Where the compiler sees it.** The compiler rejects the copy when it sees that the name
+  being copied holds a function that keeps something. It sees that for a name that was declared
+  with a function value written out that uses names of a call around it, or with the result of
+  a call it sees (7.2) that keeps something, as long as no line of the program gives the name
+  another value, or lends it to a `var` borrower or an ownership. In every other case the check
+  is made while the program runs.
+
+```go
+twice(double, 3)               // 12: double keeps nothing, so it is copied into f
+twice(addFive, 3)              // ERROR: addFive keeps step, and the argument would be a copy
+twice(makeAdder(5), 3)         // 13: the new function is taken, not copied
+
+const twiceLent: (&(int)int, int)int = (const f: &(int)int, const x: int){ return f~(f~(x)); };
+twiceLent(&addFive, 3)         // 13: addFive is lent
+```
+
+(`twice` and `double` are from 7.6.)
+
+**A parameter that takes a heap value can be filled at the call.** The value can be made on the
+spot and handed straight over with `@` (8.9), and the kept block then owns it **(adjusted)**:
+
+```go
+const makeLookup: (@^[3]int)(int)int = (var @data: ^[3]int){
+    return (const i: int){ return data~[i]; };    // fine: data is a parameter, so it's kept
+};
+
+var look: (int)int = makeLookup(@^[10, 20, 30]);  // the array is made on the spot and handed
+look(2)                // 30                       // straight over
+```
+
+To keep a local, use a helper whose parameter takes the value:
+
+```go
+const countFrom: (@^int)()int = (var @count: ^int){
+    return (){
+        count~ = count~ + 1;
+        return count~;
+    };
+};
+
+const newCounter: ()()int = (){
+    var total: ^int = ^0;
+    return countFrom(@total);          // total is handed over and left null
+};
+```
+
+A kept parameter is kept the way it was declared (7.4). A copy stays the function's own. A
+borrowed parameter (`&T`) is still a borrow, so the function can't outlive what the caller lent
+(8.13). A parameter that took the caller's heap value over (`@`) keeps that value, and the
+value is freed when the kept block ends (8.11). `first` (4.3) keeps its `T` the same way.
+**(needs review)** A `T` that is a type name takes no room in the block, though (7.7).
+
+**(needs review) A kept parameter can't borrow a name of its own call.** What a kept parameter
+borrows goes back with the function, so it follows the rule for a borrower that is given back
+(8.13): it can't be a local of the call. It can't be another parameter of the call either,
+kept or not, because the kept block is handed back to another place, and the borrower would
+still point at the old one. The same holds for a borrower, an ownership or a function inside a
+kept parameter. The compiler rejects the function value that keeps such a parameter:
+
+```go
+const linked: (int, &int)()int = (var n: int, var b: &int){
+    b = &n;                                // fine by itself: b and n end together (8.5)
+    return (){ n = n + 1; return b~; };    // ERROR: the kept b borrows n, a parameter of this call
+};
+```
+
+**(needs review)** A heap value that a kept parameter owns stays where it is when the block is
+handed back, so a kept parameter can borrow that. And as for a borrower that is given back
+(8.13), what a kept parameter borrows never comes from a variable outside the function that
+keeps it. No line can give it a target there, a line of a function given back included. The
+block goes where no one can see those variables, so nothing there could keep them from being
+changed while the parameter points into them (8.12).
+
+The rule is only for a function the call gives back with `return`. A local is never kept by
+using it in the body: returning a function that does that is an error, as above.
+
+**(adjusted) It can't outlive what was lent.** At the call, the function given back counts as
+coming from everything that was lent to the call, the same as a borrower that comes back
+(8.13): every `&` argument, and every argument that holds a borrower, an ownership or a
+function (8.5). A parameter that was copied sets no limit: the kept block holds its own copy.
+That is why `makeAdder(10)` above can be kept in a variable, and why `adderOn(&topStep)` can go
+wherever a borrower of `topStep` can. An argument handed over with `@` doesn't count: the call
+takes its value, and the caller's variable is left `null` (8.13), so nothing is left to die. A
+borrower, an ownership or a function inside that value still counts, because it points at
+something that was only lent. A result that is or holds a function also counts as borrowing
+what the function that was called keeps: the type doesn't say whether it does (see "A function
+that a kept function gives back" below).
+
+**(needs review) One call has one kept block.** When a call gives back more than one function,
+in a struct, an array or a pair, they all use the same kept parameters, in one block. It is the
+rule from the top of this section again: a function borrows the variables it uses, and here
+the variable is the call's parameter. Every new call has parameters of its own.
+
+```go
+const makeTally: (int){up: ()void, get: ()int} = (var total: int){
+    var both: {up: ()void, get: ()int} = {
+        up: ()void = (){ total = total + 1; };
+        get: ()int = (){ return total; };
+    };
+    return both;
+};
+
+var zero: int = 0;
+var tally: {up: ()void, get: ()int} = makeTally(zero);
+tally.up();
+tally.up();
+tally.get()                    // 2: up and get use the same total
+```
+
+**(needs review) A function that a kept function gives back.** It keeps the parameters of its own
+call in a block of its own, and it borrows the kept block of the function that made it, when it
+uses that function's kept parameters. So it can't outlast that block. When the function that
+made it keeps only one borrower and has no block (above), it holds the same address instead,
+and borrows what was lent:
+
+```go
+const adder3: (int)(int)(int)int = (const a: int){
+    return (const b: int){
+        return (const c: int){ return a + b + c; };
+    };
+};
+
+var plusOne: (int)(int)int = adder3(1);      // keeps a
+var plusThree: (int)int = plusOne(2);        // keeps b, and borrows the block that holds a
+plusThree(3)                                 // 6
+
+const tenPlus: ()(int)int = (){
+    var plusFive: (int)(int)int = adder3(five);
+    return plusFive(five);       // ERROR: what comes back borrows the block of plusFive, which stays in this frame
+};
+```
+
+**(needs review) Which results keep parameters.** Where the compiler sees the function that is
+called (7.2), it knows whether what comes back has a kept block: a function written in the body
+that uses the parameters has one, and so does a value that holds such a function, and a result
+that the function was given back itself and hands on, as `handOn` does. Any other result keeps
+nothing, whatever its type: `wrap(int)(3)` gives back an `any` that holds only the 3. Where the
+call goes through a variable, a result whose type can hold a function (8.5) counts as having a
+kept block in the frame that receives it.
+
+**(needs review) Where the block of a new function goes.** The call that makes the function is
+written in some frame, and that frame receives the block, also when the function goes straight
+on as an argument: in `twice(makeAdder(5), 3)` the block is in the caller's frame, and `f` only
+points at it. With a `^` in front of the call, the block is built on the heap with the
+function. The same holds for a struct, array, pair or map value that is written under the `^`
+with such calls in it.
+
+Inside its own body, a function's name is the function itself, so a function made inside
+another can call itself (10.3).
+
+---
+
+## 8. Ownership: plain, heap and borrowed values
+
+Every value has exactly one **owner**: the name, field or array element that holds it. The
+owner decides how long the value lives. A value's type says which of three cases it is.
+
+### 8.1 The three cases
+
+| Written | Who owns the value | Where the value is | It lives until… |
+|---|---|---|---|
+| `T`, no mark | this holder | right here, inside the holder | the holder ends |
+| `^T` | this holder | somewhere else, on the heap | the holder ends, gives it up, or is given something else (8.11) |
+| `&T` | another holder | wherever its owner put it | its owner decides: a borrower never frees it |
+
+```go
+var count: int = 3;                 // plain: count holds the 3 itself
+var big: ^[1000]int = ^[...];       // heap: big owns an array kept on the heap
+var view: &[1000]int = &big~;       // borrowed: view uses big's array, and big still owns it
+```
+
+A type with no mark is always the first case. Nothing is left unsaid: the other two cases
+are always marked, so no mark can only mean "mine, right here".
+
+A plain value never changes owner. It lives inside its holder, so it can be copied but
+never passed on. Only a value on the heap can go from one owner to another (8.9).
+
+A fourth mark, `@T`, is not a fourth case. It is the **ownership** of a variable: a pointer
+to the variable that is allowed to take its value (8.9).
+
+### 8.2 The symbols
+
+| Written | Where | Meaning |
+|---|---|---|
+| `^T` | in a type | a `T` on the heap, owned by this holder |
+| `&T` | in a type | a `T` that another holder owns |
+| `@T` | in a type | the ownership of a `T` variable (8.9) |
+| `^v` | in front of a value | a new value on the heap, holding a copy of `v` |
+| `&x` | in front of a variable | a borrower of `x` |
+| `@x` | in front of a variable | the ownership of `x` |
+| `p~` | behind a heap owner, a borrower or an ownership | what it leads to |
+
+What **makes** a marked value goes in front, like the mark in its type: `^5` is a `^int`,
+`&count` is an `&int`, and `@p` is an `@^int`. What **uses** one goes behind, like `a[0]` and
+`f(1)`: `p~` follows the pointer `p`.
+
+**`~` follows a pointer.** It is the one use-mark for following any pointer: a heap owner, a
+borrower and an ownership are all followed with `~`. So `^` only means the heap: `^int` is the
+type, and `^5` makes one.
+
+What is behind a name is read first, from left to right. What is in front is applied after
+it. So a chain of marks never needs brackets:
+
+```go
+&big~[0]               // follow big, take element 0, then borrow it
+^p~                    // follow p, then make a new heap value from what's there
+list~.next~.value      // follow, field, follow, field
+@list~.next            // follow, field, then the ownership of that field
+```
+
+The marks in a type and the `~`s in its use come in the same order (3.5):
+
+| Type | It is | Used as |
+|---|---|---|
+| `[3]^int` | three ints, each on the heap | `a[0]~` |
+| `^[3]int` | one array of three ints on the heap | `a~[0]` |
+| `[2]&int` | two borrowers | `a[1]~` |
+| `&[2]int` | one borrower of a whole array | `a~[1]` |
+| `&^int` | a borrower of a heap owner | `a~~` |
+| `@^int` | the ownership of a heap owner | `a~~` |
+
+### 8.3 A value on the heap: `^T`
+
+`^` in front of a value puts a copy of it on the heap. `p~` is the value there:
+
+```go
+var p: ^int = ^5;          // 5 is an int, and ^5 is a ^int
+p~                         // 5
+p~ = 6;                    // changes the value on the heap
+var x: int = p~;           // x is a plain copy: 6
+
+var big: ^[1000]int = ^[...];
+big~[3] = 7;               // follow, then index
+big~.length                // 1000
+```
+
+The types are strict. An `int` and a `^int` are different types, and a value never changes
+type by itself (3.2):
+
+```go
+var bad: ^int = 5;         // ERROR: 5 is an int, not a ^int: write ^5
+var y: int = p;            // ERROR: p is a ^int, not an int: write p~
+```
+
+`^v` always makes a copy. The value it's made from stays as it is:
+
+```go
+var n: int = 3;
+var h: ^int = ^n;          // the heap gets its own 3
+h~ = 5;                    // n is still 3
+```
+
+A value written on the spot, like `^5` or `^[1, 2, 3]`, has no original, so it's simply
+built on the heap.
+
+**(needs review)** When the heap has no room left for a new value, the program fails while it
+runs (11.2). That can happen at a `^v`, and where `=` copies a heap owner (8.8).
+
+A heap value lives as long as its owner. When the owner ends, the value is freed:
+
+```go
+const work: (int)void = (const x: int){
+    var three: ^[3]int = ^[x, x, x];
+    three~[0] = 9;
+};                         // work ends, so three ends, and its array is freed
+```
+
+A `const` owner keeps its value, like every `const`:
+
+```go
+const table: ^[3]int = ^[1, 2, 3];
+table~[0] = 9;             // ERROR: table is const, so its value can't change
+```
+
+### 8.4 A borrowed value: `&T`
+
+`&` in front of a variable makes a borrower of it. A borrower is the same memory as what it
+borrows: `b~` reads that value, and assigning to `b~` changes it.
+
+```go
+var count: int = 3;
+var b: &int = &count;      // b borrows count
+b~                         // 3
+b~ = 5;                    // count is now 5
+count = 8;                 // b~ is now 8 too: it is the same memory
+```
+
+Nothing is copied, and nothing changes owner. `count` still owns its value, and `b` never
+frees it.
+
+A borrower can borrow a variable, an array element, a map entry, a struct field or a value
+on the heap. A variable can't keep a borrower of a value made on the spot, because that
+value has no owner and is gone at the end of its statement (2.6):
+
+```go
+var scores: []int = [10, 20, 30];
+var top: &int = &scores[0];
+top~ = 99;                 // scores is now [99, 20, 30]
+
+var seen: {int}bool = {1: true, 4: false};
+var four: &bool = &seen[4];
+four~ = true;              // seen[4] is now true
+
+var view: &[1000]int = &big~;      // the whole array big owns
+var first: &int = &big~[0];        // one element of it
+view~[1] = 2;                      // big's array changes
+
+var bad: &int = &3;        // ERROR: the 3 is gone after this line, and bad would still be there
+var worse: &int = count;   // ERROR: count is an int, not an &int: write &count
+```
+
+`&T` is a type, so a borrower goes wherever other values go: in an array, in a struct, or
+into a function.
+
+```go
+var left: int = 1;
+var right: int = 2;
+var both: [2]&int = [&left, &right];
+both[0]~ = 7;              // left is now 7
+```
+
+A function borrows through its parameter, and the call shows it:
+
+```go
+const bump: (&int)void = (var x: &int){
+    x~ = x~ + 1;
+};
+
+var n: int = 3;
+bump(&n);                  // n is now 4
+bump(&scores[1]);          // scores[1] goes up by 1
+bump(n);                   // ERROR: n is an int, not an &int: write &n
+
+const swap: (&int, &int)void = (var a: &int, var c: &int){
+    var t: int = a~;
+    a~ = c~;
+    c~ = t;
+};
+swap(&left, &right);       // the two values change places
+```
+
+**A value made on the spot can be borrowed as an argument.** It lives until the end of its
+statement (2.6), and the call is over by then, so the parameter never outlives it (8.5):
+
+```go
+look(&makeBig(1)~);        // fine: look borrows the new array, which is freed at the end
+                           // of this line (8.13)
+bump(&3);                  // fine: bump changes a 3 that nothing else can read
+```
+
+`b = …` changes **what** a borrower borrows, and `b~ = …` changes **the value** it borrows:
+
+```go
+var b: &int = &left;
+b~ = 10;                   // left is now 10
+b = &right;                // b now borrows right; left is untouched
+b~ = 20;                   // right is now 20
+```
+
+### 8.5 A borrower can't outlive what it borrows
+
+A borrower can only borrow something that lives at least as long as the borrower itself. If
+what it borrows would be gone while the borrower is still there, the compiler raises an
+error.
+
+```go
+var x: int = 3;
+var a: &int = &x;          // fine: a and x end together, at the same }
+{
+    var y: &int = &x;      // fine: y ends at this block's }, before x does
+    y~ = 4;                // x is now 4
+}
+
+bump(&x);                  // fine: bump's parameter ends when the call ends,
+                           // and x is still there
+
+{
+    var inner: int = 5;
+    a = &inner;            // ERROR: inner ends at this }, but a is still there after it
+}
+
+var top: &int = &three(7)[0];      // ERROR: the array three(7) gives back is gone at the
+                                   // end of this line, but top would still be there
+```
+
+(`three` is the function from 7.6 that returns an array.)
+
+| The borrower borrows… | Allowed? |
+|---|---|
+| a variable declared in the same block | yes: they end together |
+| a variable declared in an outer block | yes: the borrower ends first |
+| the caller's variable, through a `&T` parameter | yes: the parameter ends when the call ends |
+| a variable declared in an inner block | no: it ends before the borrower does |
+| a value with no name, as an argument (8.4) | yes: the value lives until the end of its statement (2.6), after the call has ended |
+| a value with no name, kept in a variable | no: the value is gone after its statement, and the borrower would outlive it |
+| a variable a function uses from around it (7.8) | yes, while the variable lasts at least as long as the function. A function given back keeps the parameters it uses in its kept block, and it is a borrower of that block: it can't be stored where it outlasts the frame that holds the block (7.8) |
+| what a parameter borrows or keeps, put in a variable that outlasts the call **(needs review)** | no: what comes in through a parameter is only known to last as long as the call |
+| a name of a call, by a borrower that is stored behind a pointer in a place that may outlast that call **(needs review)** | no: the line that stores it is checked, as said below |
+
+The check is made every time a borrower is given something to borrow: when it's declared,
+and again each time it's pointed at something else with `b = &…`.
+
+A borrower of a heap value is measured against the variable that owns it:
+
+```go
+var view: &[1000]int = &big~;      // fine: view ends no later than big
+```
+
+An ownership (8.9) holds a variable's address too, so the same rule applies to it.
+
+**(needs review) A value that holds a borrower follows the rule for it.** A value *holds* a
+borrower, an ownership or a function when it is one, or has one in a field, an element or an
+entry, at any depth. An `any` and a `T` (4.3) count as holding all three, because the compiler
+can't see inside them. What lies behind a pointer doesn't count: the compiler can't follow it
+there (8.17). The line that puts something there is checked, as said further down.
+
+**(needs review)** A value that holds a borrower, an ownership or a function can't outlive what
+that part borrows or uses. It is the field-by-field rule again (8.8): the lifetime rules for a
+whole value are the rules for each of its parts.
+
+```go
+var both: [2]&int = [&left, &right];   // fine: both ends no later than left and right
+{
+    var inner: int = 5;
+    both[0] = &inner;                  // ERROR: inner ends at this }, but both is still there after it
+}
+```
+
+**(needs review) What comes in through a parameter lasts as long as the call, as far as the
+function knows.** That goes for every parameter that holds a borrower, an ownership or a
+function. Inside the function, such a parameter can be put in something that ends with the
+call, and it can be given back (7.8, 8.13). It can't be put in a variable that outlasts the
+call:
+
+```go
+var kept: &int = null;
+var keep: (int)int = double;
+
+const stash: (&int)void = (var b: &int){
+    kept = b;                  // ERROR: kept outlasts this call, and what b borrows may not
+};
+
+const setKeep: ((int)int)void = (const f: (int)int){
+    keep = f;                  // ERROR: keep outlasts this call, and what f keeps may not
+};
+
+const resetKeep: ()void = (){
+    keep = double;             // fine: the compiler sees double (7.2), and it keeps nothing
+};
+```
+
+**(needs review)** The rule holds for every function that comes in through a parameter, also one
+that keeps nothing: a function's type doesn't say what it keeps (7.7). A function that the
+compiler sees is stored like any other value, by the rules of 7.8.
+
+**(needs review) The line that stores a borrower behind a pointer is checked.** A borrower that
+lies behind a pointer isn't followed afterwards (8.17). But the line that puts it there shows
+both ends: what the borrower borrows, and where it goes. So the rule of this section holds at
+that line, for a borrower, an ownership and a function alike:
+
+| Where it is stored | The check |
+|---|---|
+| in a heap value that is being made with `^v`, or in a place that the compiler can trace to a name: a heap value that the name owns, directly or through other heap values, or what a pointer made in this function leads to | the new value, or that name, counts as holding it from that line on, as if it sat in a field. So everything in this section holds for it: a name can't outlast what it holds that way, and a name that holds something of this call can't be given back or moved out of the call |
+| through a pointer that came in from outside, or that was read from behind a pointer (8.12) | the compiler can't tell how long that place lasts, so it counts the longest: the place may outlast every call. What is stored there can borrow or use only a top-level name itself, which lasts as long as the program, or what came in through a parameter of this call, as `back` does in `linkBack` (below). The caller counts what its own variables may have been given (8.13). It can't borrow or use a name of this call, a name of a function call or a block around the function, a heap value that such a name or a top-level name owns, a pointer or a function that is read from an outside variable, or a kept block: one that sits in this call's frame, or the one that the function itself keeps (7.8) |
+
+```go
+const boxed: ()^&int = (){
+    var local: int = 5;
+    return ^&local;            // ERROR: the new heap value holds a borrower of local, which ends with this call
+};
+
+const leak: (&&int)void = (var slot: &&int){
+    var local: int = 5;
+    slot~ = &local;            // ERROR: slot~ lies in the caller, and local ends with this call
+};
+
+const outer: (&&int)void = (var slot: &&int){
+    var local: int = 5;
+    const inner: (&&int)void = (var s: &&int){
+        s~ = &local;           // ERROR: s came in from outside, and local ends with the call of outer
+    };
+    inner(slot);
+};
+```
+
+**(needs review)** A pointer that a call gave back counts like what was lent to that call (8.13).
+When everything that was lent can be traced to names, the first row holds for those names.
+Otherwise the second row does.
+
+**(needs review)** One case is free. A borrower of a heap value can be stored in a heap value
+that the same name owns, like the `prev` links in 8.15: the two go wherever that name's value
+goes. Keeping such links right when a part is removed is the programmer's job (8.17).
+
+**(needs review)** What the compiler can't see at such a line stays on the list in 8.17. That is
+what came in through a parameter and is stored behind a pointer in a heap value that the caller
+lent, as `linkBack` in 8.15 stores its parameter `back`: the caller counts only its own
+variables (8.13). It is also what a value went through inside a call, and a target that is
+removed after the line that stored its borrower.
+
+A value on the heap can also be made to end before its owner's `}`. Rule 8.12 covers that.
+
+### 8.6 `const`, `var` and borrowing
+
+Whether a borrower can change the value it borrows depends on how the borrower is declared:
+
+| The owner is | `var b: &T` | `const b: &T` |
+|---|---|---|
+| a `var` | allowed: `b` can read and change the value | allowed: `b` can only read it |
+| a `const` | **error** | allowed: `b` can only read it |
+
+```go
+const limit: int = 10;
+var a: &int = &limit;      // ERROR: limit is const, so its borrower has to be const
+const c: &int = &limit;    // fine
+c~                         // 10
+c~ = 11;                   // ERROR: c is a const borrower, so it can only read
+
+var count: int = 3;
+const look: &int = &count; // fine: look can read count but not change it
+count = 4;                 // look~ is now 4
+look~ = 5;                 // ERROR: look is a const borrower
+look = &limit;             // ERROR: look is const, so it always borrows count
+```
+
+A parameter works the same way: `(const v: &[]int)` borrows an array to read it, and
+`(var x: &int)` borrows a value to change it.
+
+**(needs review) A borrower that can only read stays that way.** A borrower is *read-only* when it
+is made from a place that can't be assigned (2.9), when it is read from such a place, when it
+is a copy of a read-only borrower, or when it is the result of a call that was lent one (8.13).
+So `&limit`, a borrower held in a `const` and a `const` parameter are all read-only. A
+read-only borrower goes only where it stays read-only: into a `const`, into a `const`
+parameter, or back to the caller as a result (8.13). So a `var` borrower is made only from a
+place that can be assigned, with `&` in front, from a value made on the spot (8.4), from
+another borrower that isn't read-only, from the result of a call that was lent nothing
+read-only (8.13), or from `null`:
+
+```go
+const relay: (&int)void = (const x: &int){
+    var y: &int = x;           // ERROR: x is a const borrower, so a copy of it can only read
+    bump(x);                   // ERROR: bump's parameter is a var borrower (8.4)
+};
+```
+
+**(needs review) A value with a borrower inside it follows the same rule.** That is a value with a
+borrower anywhere in what `=` copies (8.8): in a field, an element or an entry, or in a heap
+value it owns. When it is read from a place that can't be assigned, or made on the spot with a
+read-only borrower in it, it also goes only into a `const`, into a `const` parameter, or back
+as a result:
+
+```go
+const views: [2]&int = [&left, &right];    // left and right are the vars from 8.4
+var mine: [2]&int = views;                 // ERROR: the borrowers in views can only read
+const again: [2]&int = views;              // fine
+```
+
+**A `const` never changes.** The compiler checks the rules above wherever it sees where
+something read-only goes: a declaration, an assignment, and a call it sees (7.2). At a call
+through a variable it knows only the type, and the type doesn't say whether a `&T` parameter is
+read or changed (7.4). There the check is made at the call, while the program runs. Beside the
+code of every function, the compiler stores a note that says which of its parameters are `var`
+(7.7). A call through a variable that lends a `const` reads the note of whichever function the
+variable holds. When the parameter is a `var` borrower, the program fails (11.2):
+
+```go
+var f: (&int)void = bump;      // bump's parameter is var x: &int (8.4)
+
+f(&count);                     // fine: count is a var
+f(&limit);                     // fails while running: bump's parameter is a var borrower, and limit is const
+bump(&limit);                  // ERROR: the same mistake, where the compiler sees the function
+```
+
+- The call fails when the function *could* change the `const`, because its parameter is
+  declared `var`. It makes no difference whether it would on that run. That matches the call by
+  name, which the compiler rejects.
+- It is the pattern of an index (5.2), a map key (6.2) and `convert` (4.4): the compiler checks
+  when it can see, and otherwise the check is made while the program runs.
+- The note is stored with the code, not in the value, so a function value is still two
+  addresses (7.7).
+
+**(needs review)** The check covers everything read-only that such a call hands over: `&limit`, a
+read-only borrower held in a name, and a value with one inside it. Each fails when the
+parameter it goes to is a `var`.
+
+A borrower unwrapped from a `const` `any` is a `const` borrower, so it can only read. That
+follows from "a `const` never changes".
+
+**(needs review) An `any` and a `T` count as a value with a borrower inside it.** The compiler
+can't see what an `any` holds, and a generic function is checked once, for every type (4.3), so
+a `T` can stand for a type that has a borrower in it. For both, the compiler counts the worst
+case: an `any`, or a value of type `T`, that is read from a place that can't be assigned goes
+only into a `const`, into a `const` parameter, or back as a result. What `unwrap` takes out of
+such an `any` is read-only when it has a borrower in it, which is the rule above. Every
+built-in only reads what it is handed, `wrap` included, so its parameters count as `const`, and
+what it gives back follows the rule for a result (8.13). The check while running goes by the
+type that is really there: an `any` that is handed to a call through a variable is read-only
+only when the value inside has a borrower in it, and a `T` only when the type it stands for has
+one.
+
+```go
+const c: &int = &limit;
+
+const sealed: any = wrap(&int)(c);         // fine: the any is read-only, because c is
+var loose: any = wrap(&int)(c);            // ERROR: the result can only read, because c can
+var copied: any = sealed;                  // ERROR: sealed is a const, and an any may hold a borrower
+const back: &int = unwrap(&int)(sealed);   // fine: a const borrower, so it can only read
+var changer: &int = unwrap(&int)(sealed);  // ERROR: unwrapped from a const any, so it can only read
+const num: any = wrap(int)(5);
+var n: int = unwrap(int)(num);             // fine: an int has no borrower in it
+const viaFirst: &int = first(&int)([c]);   // fine: the result is read-only, because c is
+first(int)([limit])                        // 10: an int has no borrower in it
+const joined: []&int = join(&int)([c], [c]);   // fine: join only reads, and what it gives is read-only
+```
+
+(`first` is the generic function from 4.3. Its parameter is a `const`, so it can be handed
+`[c]`.)
+
+A `const` struct that holds functions needs no rule of its own. A function reaches a struct
+through a parameter or through the struct's name, so the rules above protect it (9.3).
+
+A `const` function is an address: the name always holds the same code. The function can still
+change a variable outside itself (7.8). That is no exception to the rule that a `const` never
+changes: the `const` itself, the address, stays the same.
+
+**(needs review)** An ownership is given only by a place that can be assigned (8.9), so there is
+never an ownership of a `const`. A `const` ownership of a `var` can only read it, like a
+`const` borrower: changing and taking through an ownership need a `var` one. So one rule covers
+every `const`: what a `const` name reaches can't be changed through that name (2.9). One
+thing is not reached through a name in this sense, as said above: what a function changes
+outside itself.
+
+### 8.7 Converting between the three
+
+Going from one case to another is always written out:
+
+| From | To | Written | Is anything copied? |
+|---|---|---|---|
+| a plain value | a heap value | `^v` | yes: the heap gets its own copy |
+| a plain value | a borrower | `&x` | no |
+| a heap value | a plain value | `p~` | yes, when it's put in a plain holder |
+| a borrowed value | a plain value | `b~` | yes, when it's put in a plain holder |
+| a heap value | a borrower | `&p~` | no |
+| a borrowed value | a heap value | `^b~` | yes: a borrower can't become an owner, so this makes a new heap copy |
+
+```go
+var p: ^int = ^5;
+var b: &int = &p~;         // borrow the value p owns
+var x: int = b~;           // a plain copy of it
+var q: ^int = ^b~;         // a new heap value holding a copy
+
+var bad1: ^int = 5;        // ERROR: write ^5
+var bad2: int = p;         // ERROR: write p~
+var bad3: &int = p;        // ERROR: write &p~
+var bad4: &int = &p;       // ERROR: &p is an &^int, a borrower of the owner itself: write &p~
+var bad5: ^int = b;        // ERROR: a borrower can't become an owner: write ^b~ for a copy
+var bad6: int = x~;        // ERROR: x is a plain int, so there is nothing to follow
+```
+
+### 8.8 `=` always makes a copy
+
+`=` means the same for every type: the left side gets its own copy, and the right side is
+never changed.
+
+| Type of both sides | What the left side gets |
+|---|---|
+| `T` | its own copy |
+| `^T` | its own copy, in a new place on the heap |
+| `&T` | a borrower of the same value: a borrower owns nothing, so there is nothing to copy |
+| `@T` | an ownership of the same variable: it holds an address, like a borrower, and nothing moves |
+| a function | the same code, when the function keeps nothing. Copying a function that keeps parameters is an error (7.8) |
+| a `type` **(needs review)** | the same type |
+| an `any` **(needs review)** | its own copy of the type and the value inside |
+
+```go
+var a: int = 3;
+var b: int = a;            // b is a copy
+
+var p: ^int = ^5;
+var q: ^int = p;           // q gets its own heap int holding 5
+q~ = 9;                    // p~ is still 5
+
+var r: &int = &a;
+var s: &int = r;           // s borrows a too
+```
+
+**A copy is complete.** Copying a value that owns other heap values copies those as well,
+so the copy shares nothing with the original:
+
+```go
+var rows: [2]^int = [^1, ^2];
+var copy: [2]^int = rows;  // two new heap ints
+copy[0]~ = 9;              // rows[0]~ is still 1
+```
+
+Copying the first node of a linked list therefore copies every node behind it (8.14).
+
+**What is done to a struct is done to each of its fields.** A struct is used like any other
+variable: it can be copied, moved, put on the heap, borrowed, and have its ownership taken.
+Each of those is the same thing done to every field, each field by the rule for its own
+type. The same holds for an array and its elements. With `foo` and `boo` two structs that
+have the fields `a` and `b`:
+
+| You write | Which is, field by field |
+|---|---|
+| `foo = boo;` | `foo.a = boo.a; foo.b = boo.b;` |
+| `@foo = @boo;` | `@foo.a = @boo.a; @foo.b = @boo.b;` (8.9) |
+| `var h: ^Boo = ^boo;` | one new heap value, then `h~.a = boo.a; h~.b = boo.b;` |
+| `var r: &Boo = &boo;` | `r~.a` is `boo.a`, and `r~.b` is `boo.b`: the same memory |
+| `var o: @Boo = @boo;` | `o` is the ownership of `boo.a` and of `boo.b` together |
+
+This is why a copy is complete. A field that is a heap owner gets its own heap value, and
+the fields of that value are copied the same way, all the way down.
+
+A field that is a borrower is copied as a borrower, so the copy borrows the same thing the
+original borrows. For the list with a `prev` in 8.15, each copied node's `prev` therefore
+still borrows a node of the original list, and those links have to be set again after the
+copy.
+
+A field that holds a function is copied like any function value (7.8, 9.6).
+
+**An owner that is given a new value frees the one it had:**
+
+```go
+q = p;                     // q's old heap int is freed, and q gets a new copy of p's
+```
+
+**A value that nothing else holds is taken, not copied.** That covers a value written on
+the spot, the result of a call, and a local that a function returns (8.13). **(needs review)** A
+parameter that a function returns is taken in the same way: it ends with the call, like a
+local.
+
+```go
+var one: ^int = ^5;                    // the new heap value has no other owner, so one takes it
+var made: ^[1000]int = makeBig(1);     // the same for what a function gives back
+```
+
+To take over a value that another owner still holds, without copying it, move it (8.9).
+
+### 8.9 Ownership as a type: `@T`, and moving
+
+Every variable has an **ownership**: the right to its value. `@` in front of a variable
+gives that ownership as a value of its own, with its own type.
+
+| Written | What it is |
+|---|---|
+| `@p` | `p`'s ownership. When `p` is a `^int`, its type is `@^int` |
+| `h~` | follow an ownership: the variable it is the ownership of |
+| `@q = h;` | set `q`'s ownership: `q` takes the value over, and the old variable lets go |
+| `var @q: ^int = h;` | the same, for a new variable |
+
+```go
+var p: ^int = ^5;
+
+var h: @^int = @p;         // h is p's ownership. Nothing has moved: p still owns the 5
+h~                         // p itself, a ^int
+h~~                        // 5
+
+var c: ^int = h~;          // a copy, like every = (8.8). This is not a move
+var @q: ^int = h;          // the move: q owns the 5 now, and p is left null (8.10)
+```
+
+`@` is the third mark, and it is written and used like the other two:
+
+| Type | Made with | Followed with | Following gives |
+|---|---|---|---|
+| `^T` | `^v` | `p~` | the value on the heap |
+| `&T` | `&x` | `b~` | the variable it borrows |
+| `@T` | `@x` | `h~` | the variable it is the ownership of |
+
+It works on every variable, and on a field or an element, not only on heap owners:
+
+```go
+var x: int = 3;
+var o: @int = @x;          // @x is an @int
+o~                         // x itself: 3
+
+@list~.next                // the ownership of a field: an @^Node (8.14)
+```
+
+**(needs review)** A map entry is a holder like an array element (6.4), so `@` works on it too:
+`@seen[4]` is the ownership of that entry.
+
+`@` in front of a value made on the spot hands that value straight over. Nothing is left
+`null`, because nothing else held it:
+
+```go
+take(@makeBig(1));                 // the new array goes straight to take's parameter (8.13)
+var h: @^Node = @makeNode(1);      // ERROR: the node has no variable, so h would outlive it (8.5)
+```
+
+**Moving.** A move sets one variable's ownership from another's. Nothing is copied: the
+value stays where it is on the heap, and only its owner changes. Both sides are ownerships,
+so both have the same type:
+
+```go
+@q = @p;                   // both are @^int: q takes over p's heap int, and p is left null
+                           // the value q owned before is freed
+
+var @r: ^int = @q;         // a new variable that takes q's value over
+
+q = @p;                    // ERROR: q is a ^int and @p is an @^int
+@q = p;                    // ERROR: @q is an @^int and p is a ^int
+```
+
+In `var @r: ^int = @q;` the type says what `r` is, a `^int`. The `@` on the name says that
+`r`'s ownership is what is being set.
+
+What a move does depends on what the variable holds. It mirrors a copy (8.8):
+
+| The variable is | `=` copies | A move |
+|---|---|---|
+| a heap owner, `^T` | a new heap value | the same heap value: the old variable is left `null` |
+| a struct or array that holds heap owners | every heap value inside is copied | the plain parts are copied, and every owner inside is handed over and left `null` |
+| a plain value that owns nothing on the heap | a copy | the same as a copy: there is nothing to hand over |
+
+**Look, change, take.** An ownership sits beside a borrower as one more level of what a
+holder may do to someone else's variable:
+
+| | read it | change it | take its value away |
+|---|---|---|---|
+| `const b: &T` | yes | no | no |
+| `var b: &T` | yes | yes | no |
+| `var h: @T` | yes | yes | yes |
+| `const h: @T` **(needs review)** | yes | no | no |
+
+So the mark at a call shows what a function may do to a variable you pass it: `f(x)`
+nothing, because it gets a copy, `f(&x)` read or change it, and `f(@x)` takes its value
+(8.13). A function can also change a variable from outside itself without being passed it
+(7.8), and then the call shows nothing.
+
+The rules for an ownership and a move:
+
+- **Nothing moves when `@p` is written.** `p` lets go only when its ownership is set into
+  another variable. Until then `p` still owns its value.
+- **Both sides of a move are ownerships.** A plain `=` never changes its right-hand side.
+- **The old variable is left `null`,** so the value still has exactly one owner.
+- **The new owner's old value is freed,** as with any owner that is given something new. The
+  value is taken out of the old variable before that happens (8.14 uses this).
+- **An ownership can't outlive its variable.** It holds the variable's address, so the rule
+  for borrowers applies (8.5):
+
+  ```go
+  const bad: ()@^int = (){
+      var local: ^int = ^5;
+      return @local;         // ERROR: local ends here, but its ownership would still be there
+  };
+  ```
+
+- **Only an owner can give an ownership.** A borrower can read and change, but not take:
+
+  ```go
+  var b: &^int = &p;
+  var @t: ^int = @b~;        // ERROR: b only borrows p
+  ```
+
+- **A `const` has no ownership to give,** because an ownership allows changing it and
+  emptying it:
+
+  ```go
+  const fixed: ^int = ^5;
+  var @t: ^int = @fixed;     // ERROR: fixed is const
+  ```
+
+- **Copying an ownership copies the address,** like copying a borrower. `var h2: @^int = h;`
+  is a second ownership of the same variable. The value still has one owner: the variable.
+- **After a move, an ownership still points at the old variable,** which is now `null`.
+  `h~ == null` is `true` after `var @q: ^int = h;`.
+- **A value can be moved only when nothing still in use points at it** (8.12).
+- **The new owner decides how long the value lives from then on:**
+
+  ```go
+  var data: ^[1000]int = ^[...];
+  {
+      var @inner: ^[1000]int = @data;
+  }                          // inner ends here, so the array is freed
+  data == null               // true
+  ```
+
+A heap owner `p` can be used in four ways, and each is written differently:
+
+| Written | What it gives | `p` afterwards |
+|---|---|---|
+| `p~` | the value | unchanged |
+| `&p~` | a borrower of the value | unchanged |
+| `p` | a copy of the value, in a new place on the heap | unchanged |
+| `@p` | `p`'s ownership | unchanged, until that ownership is set into another variable: then `null` |
+
+A local that a function returns needs no ownership (8.13): it ends there anyway, so nothing
+is left behind to be emptied.
+
+### 8.10 `null`
+
+A heap owner that owns nothing is `null`.
+
+**How an owner becomes `null`:**
+
+| How | What happens to the value it owned |
+|---|---|
+| its value is moved to another variable (8.9) | it lives on with the new owner |
+| it is set to `null` | it is freed |
+| it is declared with `null` | there was no value |
+
+```go
+var p: ^int = ^5;
+var @q: ^int = @p;         // moved away: p is null, and q owns the 5
+
+var r: ^int = ^7;
+r = null;                  // set to null: the 7 is freed
+
+var later: ^int = null;    // declared null: it owns nothing yet
+```
+
+**How it stops being `null`:** it is given a value, or takes one over.
+
+```go
+later = ^8;                // later owns a new heap int
+@p = @later;               // p takes it over, and now later is null
+```
+
+**Testing for it:** `p == null` and `p != null` give a `bool`. Comparing doesn't copy
+anything and doesn't change `p`. A pair (10.1) then picks what to do. A function that
+is handed an owner to test borrows the owner itself:
+
+```go
+const valueOr: (&^int, int)int = (const owner: &^int, const fallback: int){
+    const cases: ?(&^int, int)int = [
+        (const o: &^int, const f: int){ return o~~; },     // false: it owns a value, so read it
+        (const o: &^int, const f: int){ return f; }        // true: it is null
+    ];
+    return cases[owner~ == null](owner, fallback);
+};
+
+valueOr(&p, 0)             // p's value, or 0 when p is null
+```
+
+`&p` borrows the owner itself, so its type is `&^int`. `owner~` is the owner, and `owner~~`
+is the value it owns.
+
+**Following a `null` fails while the program runs:**
+
+```go
+var none: ^int = null;
+none~                      // fails while running: none owns nothing
+```
+
+A copy of a `null` owner is `null` as well, because there is nothing to copy.
+
+A borrower can be `null` too, meaning it borrows nothing yet: `var b: &int = null;`.
+Following it fails in the same way.
+
+**(needs review)** `null` is "no address" (8.18), so it fits all three pointer types: a `^T`, an
+`&T` and an `@T`. Following any of them when it is `null` fails while the program runs
+(11.2). So does a move or a call that takes a value through an ownership that is `null`, as in
+`var @q: ^int = h;`. Nothing else can be `null`:
+
+```go
+var h: @^int = null;       // fine: an ownership of nothing yet
+var n: int = null;         // ERROR: null is a pointer, and an int isn't one
+count == null              // ERROR: count is an int
+```
+
+### 8.11 When a heap value is freed
+
+A heap value is freed at the moment it has no owner left:
+
+| When | Example |
+|---|---|
+| its owner ends | the `}` of the block the owner was declared in, or the end of the call for a parameter |
+| its owner is given a new value with `=` | `q = p;` frees what `q` owned before |
+| its owner takes another value over in a move | `@q = @p;` frees what `q` owned before |
+| its owner is set to `null` | `r = null;` |
+| it has no name and nothing receives it | `makeBig(1);` on its own, or only lent as in `look(&makeBig(1)~);`: freed at the end of the statement (2.6) |
+| the value that owns it is freed | a list node's `next`: freeing a node frees every node behind it |
+| its kept block ends | a heap value owned by a parameter that a function given back keeps: the block ends with the frame that holds it, or with the heap value it is part of (7.8) |
+
+A heap value is **not** freed when it's moved (it has a new owner), and never by a
+borrower.
+
+**(adjusted)** A heap value whose owner ends before the last call of a function is freed
+there, and not at the `}`, and so is one that a kept parameter owns in a kept block of that
+call's frame (10.4).
+
+### 8.12 Nothing is freed while something still points at it
+
+Rule 8.5 stops a borrower from outliving the variable it borrows from. A value on the heap
+can also be made to end sooner than that: its owner can be given something new, set to
+`null`, or have its value moved away. This rule covers those.
+
+A **pointer** here is a borrower (`&T`) or an ownership (`@T`). To reach a value on the heap,
+a pointer has to follow that value's owner.
+
+**While a pointer that was made by following an owner is still used below, that owner can't
+be changed.** The compiler raises the error at the line that would change it.
+
+"Changed" is everything that frees or moves what the owner holds:
+
+| The line | What it does to what `p` owns |
+|---|---|
+| `p = …;` and `p = null;` | frees it (8.8) |
+| `@p = …;` | frees it |
+| `@q = @p;` and `var @q: T = @p;` | moves it away (8.9) |
+| `take(@p)` | moves it into the function (8.13) |
+| a call to a function that can change `p` | may do any of these |
+
+"Still used below" means written anywhere further down the function. There are no loops, so
+later in the text is later in time. **(adjusted)** Two things widen this, and both are said
+further down: a call below to a function that uses the pointer is a use of it, and a pointer in
+an outside variable is still in use when the function ends.
+
+**(needs review)** A function counts as a pointer in this rule when it keeps a place that was
+reached by following an owner, or a pointer that followed one. A function that a call gave
+back followed what a borrower given back by that call would have (8.13).
+
+**Which owners a pointer followed** is read off the line that made it:
+
+| The pointer | Owners it followed | So these can't be changed while it is used below |
+|---|---|---|
+| `&p` | none: it points at `p` itself | none |
+| `&p~` | `p` | `p` |
+| `@list~.next` | `list` | `list` |
+| `&list~.next~` | `list`, then `list~.next` | `list` and `list~.next` |
+| `&b~.value`, where `b` is a borrower | the ones `b` followed | the same as for `b` |
+| a copy of a pointer, as in `var c: &int = b;`, also one read out of a value, as in `both[0]` **(needs review)** | the ones the pointer it copies followed | the same as for that pointer |
+
+```go
+var p: ^int = ^5;
+var b: &int = &p~;               // b followed p
+p = ^6;                          // ERROR: b is used below, and this frees what p owns
+b~
+```
+
+To change the value where it is, so that `b` sees it, write `p~ = 6;`.
+
+```go
+var h: @^Node = @list~.next;     // h followed list
+list = makeNode(9);              // ERROR: h is used below, and this frees the first node
+var @n: ^Node = h;
+```
+
+Taking the node out first makes both lines fine, because `h` isn't used after that:
+
+```go
+var h: @^Node = @list~.next;
+var @n: ^Node = h;
+list = makeNode(9);              // fine
+```
+
+(`Node`, `makeNode` and `list` are from 8.14.)
+
+**An owner beyond where a pointer points was not followed,** so it can still be changed. A
+pointer into a list can change what comes after it:
+
+```go
+var cur: &Node = &list~.next~;   // cur followed list and list~.next
+cur~.next = makeNode(9);         // fine: cur~.next is beyond cur
+cur~.value
+```
+
+**A value may be moved anywhere.** A move changes the owner it empties, so it is allowed
+whenever nothing still in use followed that owner. Where the value goes makes no difference,
+including into an owner that ends sooner:
+
+```go
+var data: ^[1000]int = ^[...];
+var b: &[1000]int = &data~;          // b followed data
+{
+    var @inner: ^[1000]int = @data;  // ERROR: b is used below, and this moves what data owns
+}
+b~[0]
+```
+
+Without the last line it is fine: the array is freed at the `}`, and nothing leads to it any
+more.
+
+**Calls.** While a call runs, its pointer arguments are in use, and the function may do what
+each argument lets it (8.9):
+
+| The argument | The function may | So the call is an error when another pointer in use followed… |
+|---|---|---|
+| `f(x)`, a copy | nothing to the caller's value | never |
+| `f(&x)` to a `const` parameter | read | never |
+| `f(&x)` to a `var` parameter | change `x`, and every owner inside it | `x`, or an owner inside it |
+| `f(@x)` | take `x`'s value | `x`, or an owner inside it **(needs review: an owner inside it, because taking a struct or an array takes every owner in it, 8.9)** |
+| an argument with an ownership of `x` inside it, as in `f([@x, @y])` **(needs review)** | read `x`, and through a `var` parameter change it or take its value (8.13) | `x`, as for `f(&x)` |
+| an argument that is, holds or lends a function **(needs review)** | call it | what that function changes or takes, as said below |
+
+"Another pointer in use" is one that is used below in the caller, or another argument of the
+same call: `f(&list~.next~, @list)` hands the list over while the first argument points into
+it. **(needs review)** The function that is called is in use during the call as well, when it
+counts as a pointer. All of them are in use for everything the call does: for what each
+argument lets its function do, and for what the function changes from outside itself (below).
+
+**(needs review) A statement is still using what it has worked out.** The parts of a statement
+are worked out one after another (2.9), and a call in a later part runs before the statement
+is done with the earlier parts. So a pointer, a place or a function that an earlier part
+reached by following an owner stays in use until the statement has used it, and a call in a
+later part can't change that owner. A value is different: it is read when it is worked out.
+
+```go
+var p: ^int = ^5;
+const renewP: ()int = (){ p = ^6; return 0; };
+const addTo: (&int, int)int = (const b: &int, const n: int){ return b~ + n; };
+
+addTo(&p~, renewP())             // ERROR: &p~ is worked out first, and renewP then frees what it points at
+p~ + renewP()                    // 5: p~ is a value, read before renewP runs
+```
+
+**(needs review)** The same goes for a place: in `big~[pick()]` the array is reached before
+`pick()` runs, so `pick` can't change `big`.
+
+A function's type doesn't say whether a `&T` parameter is read or changed (7.4). For a
+function called by its own name, the compiler looks at the function. For one called through
+a variable (7.2), every `&` argument counts as one that may change.
+
+"Called by its own name" and "through a variable" are the two cases of 7.2. A
+lookup in a `const` array, pair or map whose functions are written out is one the compiler
+sees: it looks at every function the lookup could give, and counts the worst of them. So a
+choice made with `cases[…](…)` (section 10) is not a call through a variable.
+
+**A function that changes a variable from outside itself** (7.8) counts too. For a function
+called by its own name, the compiler reads which outside variables it changes or takes, and
+the call line counts as changing them:
+
+```go
+const reset: ()void = (){
+    list = makeNode(9);
+};
+
+var b: &Node = &list~;           // b followed list
+reset();                         // ERROR: b is used below, and reset changes list
+b~.value
+```
+
+A call through a variable (7.2) is checked while the program runs, the same way 8.6 checks a
+`const` that is lent to one. The note beside each function's code also says which outside
+variables the function changes, takes, gives a new target to or follows (7.7). The call reads
+the note of the function the variable really holds, and fails at that call if it touches
+something that a pointer still used below depends on. A function written somewhere else never
+makes a line a compile error.
+
+**(needs review) Outside variables.** A variable is *outside* a function when the function's body
+uses it without declaring it (7.8). These are all the kinds:
+
+| An outside variable of a function | Where a call of the function reaches it |
+|---|---|
+| a top-level `var` | under the same name, from anywhere in the file |
+| a name of a function or a block around the function | under the same name, for a call written inside that function or block. A call written anywhere else can't name it (below) |
+| a parameter that the function keeps (7.8) | no caller can name it (below) |
+
+**(needs review) What a call counts as doing.** The compiler reads a function for three things,
+and a call counts as doing each of them at its line:
+
+| The function | The call |
+|---|---|
+| changes or takes an outside variable | counts as changing it |
+| gives a pointer in an outside variable a new target | makes that pointer at the call line, with the owners that the function's own line followed |
+| uses a pointer in an outside variable | is a use of that pointer: "still used below" includes every call below to a function that uses it |
+
+**(needs review)** What the functions it calls by name do counts as done by the function itself,
+and so does what a function that is handed to it does (below). At a call by name the compiler
+counts a function exactly as its note says (7.7), so a function whose note is fail safe counts
+as fail safe there too (below).
+
+```go
+var b: &int = &p~;               // b followed p
+const peekB: ()int = (){ return b~; };
+p = ^6;                          // ERROR: peekB is called below, and it uses b
+peekB()
+```
+
+```go
+var q: ^int = ^5;                // three top-level names
+var watch: &int = null;
+const aim: ()void = (){ watch = &q~; };
+
+aim();                           // watch now counts as having followed q
+q = ^6;                          // ERROR: watch is used below, and this frees what q owns
+watch~
+```
+
+**(needs review) The check at a call through a variable.** The note of the function that the
+variable holds is read at the call, and the call fails in these cases:
+
+| The note says that the function | The call fails when |
+|---|---|
+| changes or takes an outside variable | a pointer in use at the call followed it, or followed an owner that counts as the same one (below) |
+| gives a pointer in a top-level variable a new target | the new target followed an owner that the caller doesn't already count that pointer as having followed |
+| follows a pointer in an outside variable | the pointer may point at something gone: an owner that it followed was changed after it followed it, and it hasn't been given a new target since |
+
+"In use at the call" means what it means for a call by name: a pointer that is used below,
+another argument, and the function itself when it counts as a pointer. A function that is
+handed to the call and that the compiler doesn't see is checked by its note in the same way.
+The failure prints `call touches what a pointer depends on` (11.2). What the caller then counts
+for a pointer in another kind of outside variable is in the rule for a shared pointer (below).
+
+**(needs review)** A function whose note is fail safe (7.7) counts as changing, taking and
+following every variable outside it, on top of what its own lines do, at a call by name as
+much as at a call through a variable. Such a call is turned away by the compiler, or fails while
+the program runs, when a pointer in use at the call followed any owner other than a name of the
+caller's own call that no function written inside the caller uses, or an owner inside such a
+name. It is turned away or fails too when a shared pointer (below) may point at something gone.
+A call inside such a function that gives a pointer a new target is checked where it is made, by
+the table above.
+
+```go
+var stored: ()void = reset;
+const runStored: ()void = (){ stored(); };
+
+var b: &Node = &list~;           // b followed list
+runStored();                     // ERROR: b is used below, and runStored calls through stored, so it counts as changing list
+b~.value
+```
+
+**(needs review) A function that is handed over may be called.** An argument that is, holds or
+lends a function lets the function that is called run it. So the call counts as a call of the handed
+function too: it does what that function does to its outside variables. Where the compiler
+sees which function is handed over (7.2), it reads that function. Otherwise the check is made
+while the program runs, with the note of the function that is handed over, as for a call
+through a variable.
+
+```go
+const run: (&()void)void = (const f: &()void){ f~(); };
+
+const runRefill: ()int = (){
+    var box: ^int = ^5;
+    const refill: ()void = (){ box = ^6; };
+    var inBox: &int = &box~;     // inBox followed box
+    run(&refill);                // ERROR: inBox is used below, and run may call refill, which frees what box owns
+    return inBox~;
+};
+```
+
+**(needs review) A pointer that function bodies share.** A pointer that is, or is held in, an
+outside variable is a *shared* pointer. Every function that reaches it can follow it, whenever
+that function runs. For this rule the top level of the file counts as a body too. Two things
+hold for a shared pointer:
+
+- **It is still in use when a body ends,** as long as the pointer itself lives on. Whatever
+  runs next may follow it.
+- **What it followed before a body began depends on where it is declared,** as the two
+  paragraphs below say.
+
+**(needs review) A name of a function or a block, and a parameter that functions given back
+keep** (7.8), can only be reached by lines that are written inside that function or block. At
+the first line of a body that doesn't declare such a pointer, it counts as having followed every
+owner that one of those lines has it follow: the compiler reads them all together. In the body
+that declares it, it counts the same after a call that the compiler doesn't see into: a call
+through a variable, or a call of a function whose note is fail safe (7.7). A caller can't see
+kept parameters at all, and it can call the functions that share them in any order, so the
+check is made where those functions are written, and they are safe in every order.
+
+**(needs review) A pointer in a top-level variable** can be reached by every function in the file.
+Reading all of them would let a function written somewhere else turn a line away. So the top
+level protects such a pointer instead: every function runs inside a call that the top level
+makes, `main` included (11.1), and the top level checks each of those calls by what it does,
+as above. At the first line of a function's body, a pointer in a top-level variable counts as
+having followed nothing. A call that changes what it may point into is an error where the
+pointer is known:
+
+```go
+const renew: ()void = (){
+    q = ^6;                      // fine: no line of renew gives watch a target
+};
+
+aim();                           // watch now counts as having followed q
+renew();                         // ERROR: watch is still in use, and renew changes q
+watch = null;                    // watch points at nothing now
+renew();                         // fine
+```
+
+(`q`, `watch` and `aim` are the three top-level names above, and these lines are at the top
+level.)
+
+**(needs review) Owners the compiler can't tell apart.** The compiler sees which owner a pointer
+leads to when the pointer was made in the function that uses it, and is held in a name. A
+pointer that *came in from outside* is different: a parameter, a pointer that is read out of a
+value that came in, and a pointer in an outside variable. So is a pointer that is *read from
+behind a pointer*: a borrower or an ownership that lies in a heap value, or behind a borrower.
+The compiler knows the type of such a pointer, and not where it points. `f(&p, &p)` hands one
+owner to two parameters. So the rule counts the worst case:
+
+| These two owners | Count as |
+|---|---|
+| one that is reached through a pointer from outside, and one of the same type that is reached through another pointer from outside, or that is an outside variable or lies inside one | one owner: a change to either is a change to both |
+| one that is reached through a pointer read from behind a pointer, and any other owner of the same type, also one that the function names itself | one owner: any line may have stored that pointer there (8.5) |
+| two elements of one array, or two entries of one map | one owner, unless both are picked by written values (3.2) that differ |
+| two owners of different types | two owners. Inside a generic function, a type with a `T` in it counts as the same type as every type |
+| two owners that are reached along different ways from one pointer, when the ways go only through owners and their fields, and differ by more than an index or a key | two owners: `o~` and `o~~.next` in 8.15 are never the same. Ways that differ only by an index or a key follow the third row, and a way that follows a borrower or an ownership held in the value follows the second |
+
+```go
+const renewBoth: (&^int, &^int)int = (var a: &^int, var c: &^int){
+    var r: &int = &a~~;          // r followed a~, the owner that a borrows
+    c~ = ^6;                     // ERROR: r is used below, and c may borrow the same owner as a
+    return r~;
+};
+```
+
+**(needs review)** The same goes for pointers that are held together. A pointer that is read out
+of an array, a pair or a map of pointers with an index or a key that isn't a written value
+could be any pointer held there. So it counts as each of them: it followed what any of them
+followed, and it may point at what any of them points at.
+
+```go
+var targets: ?&^int = [&p, &q];
+var r: &int = &targets[flag]~~;      // r followed p or q: the compiler can't tell which
+p = ^6;                              // ERROR: r is used below, and it may point at what p owns
+r~
+```
+
+(`p` and `q` are two `var`s of type `^int`, and `flag` is a `bool`.)
+
+**(needs review)** A pointer that is read from behind a pointer can lead back to an owner that the
+function names itself, so the second row counts that owner too:
+
+```go
+var box: ^&^int = ^&p;               // fine: box counts as holding a borrower of p (8.5)
+var r: &int = &p~;                   // r followed p
+box~~ = null;                        // ERROR: r is used below, and box~ may borrow p, so this may free what p owns
+r~
+```
+
+**(needs review) Owners that a caller can't name.** A function that is called can change or take
+an owner that the line of the call has no name for: a parameter that the function keeps, a name
+of a function call or a block that the call isn't written in, or what a pointer that the
+function keeps leads to. Each of these counts for
+the caller as an owner that is reached through a pointer from outside, by the first row of the
+table. A top-level variable that the function changes is an outside variable for the caller in
+that row, also when the caller's own lines don't use it. For a call through a variable, the
+note says which such owners the function changes or takes, with their types, and the check is
+made while the program runs.
+
+```go
+const useAfter: (&^int, &()void)int = (const o: &^int, const f: &()void){
+    const r: &int = &o~~;        // r followed o~, an owner that is reached through a pointer from outside
+    f~();                        // fails while running: r is used below, and swapOwn, which f holds, changes a ^int this line can't name
+    return r~;
+};
+
+const lendBoth: ()int = (){
+    var own: ^int = ^5;
+    const swapOwn: ()void = (){ own = ^6; };
+    return useAfter(&own, &swapOwn);     // swapOwn uses a name of this call, so it is lent, not copied (7.8)
+};
+```
+
+**(needs review)** What a parameter followed on the way to where it points is the caller's
+business: it is checked at the call, by the rules above. What a pointer in an outside variable
+followed is covered by the rule for a shared pointer.
+
+### 8.13 Functions and ownership
+
+A parameter is declared like any name (7.4), so the rules above apply to it unchanged. The
+function's type shows `^`, `&` and `@`, and the call shows `&` and `@`:
+
+```go
+const use: (^[1000]int)void = (var a: ^[1000]int){ ... };       // a gets its own copy
+const look: (&[1000]int)void = (const a: &[1000]int){ ... };    // a borrows, to read
+const take: (@^[1000]int)void = (var @a: ^[1000]int){ ... };    // a takes the caller's array over
+
+use(big);              // use gets its own copy on the heap, and big is unchanged
+look(&big~);           // look borrows the array: nothing is copied and nothing changes owner
+take(@big);            // take's parameter takes the array over, and big is left null
+```
+
+| Parameter type | The call | What the function gets |
+|---|---|---|
+| `int` | `f(n)` | its own copy |
+| `^[1000]int` | `use(big)` | its own copy, in a new place on the heap |
+| `&[1000]int` | `look(&big~)` | the caller's array, borrowed: it can read it, and change it when the parameter is a `var` |
+| `@^[1000]int` | `take(@big)` | the caller's array itself: the parameter takes it over at the call, and the caller's variable is left `null` |
+
+**A parameter that asks for an ownership takes it.** The parameter is written like the moving
+declaration in 8.9, `var @a: ^[1000]int`, because it is one: the argument is what the
+parameter's ownership is set from. The function's type lists `@^[1000]int`, which is what
+the call has to give. So the move happens at the call itself:
+
+- after `take(@big)`, `big` is always `null`;
+- inside the function, `a` is an ordinary `^[1000]int` that owns the array, and `a~[0]` is
+  its first element;
+- when the call ends, `a` ends, and the array is freed unless the function moved it on,
+  returned it, or gave back a function that uses `a` (7.8).
+
+An ownership held in a variable is given the same way: `take(h)`, where `h` is an
+`@^[1000]int`. A value made on the spot is handed straight over with `@` in front:
+`take(@makeBig(1));` (8.9). A parameter is never declared with the type `@T` itself, so a
+function that is given an ownership can't leave the value where it was. That is
+about an ownership that is the whole argument. One that sits inside another value, as in
+`f([@x, @y])`, is lent and not taken (below).
+
+A value made on the spot can be lent as well, with `&` in front: `look(&makeBig(1)~);`. The
+parameter borrows the new array for the call, nothing takes it over, and it is freed at the
+end of the statement (8.4).
+
+**Every argument is worked out before any parameter takes.** A call works out all of its
+arguments first, from left to right, and only then sets the parameters, from left to right
+(7.2). So an argument that reads a variable and an argument that hands the same variable
+over don't get in each other's way:
+
+```go
+const both: (@^int, int)void = (var @owned: ^int, const was: int){ ... };
+
+var x: ^int = ^5;
+both(@x, x~);
+```
+
+| Step | What happens |
+|---|---|
+| 1 | `@x` is worked out: it is `x`'s ownership. Nothing moves yet (8.9) |
+| 2 | `x~` is worked out: it is 5 |
+| 3 | `owned` is set: it takes the heap int over, and `x` is left `null` |
+| 4 | `was` is set: it gets the 5 from step 2 |
+
+If each parameter were set as soon as its argument was worked out, step 3 would come before
+step 2, and `x~` would follow a `null`. With this order, `both(@x, x~)` and a function that
+takes the same two things the other way round both work.
+
+A function gives a heap value back by returning it. Its type ends in a `^`, so the caller
+knows it will own what comes back:
+
+```go
+const makeBig: (int)^[1000]int = (const x: int){
+    var made: ^[1000]int = ^[...];
+    return made;                       // made ends here, so the caller takes the array: no copy
+};
+
+var mine: ^[1000]int = makeBig(1);     // mine owns the array
+var flat: [1000]int = makeBig(1)~;     // flat is a plain copy; the heap array is freed at the
+                                       // end of this line, because nothing owns it
+makeBig(1);                            // nothing receives it, so it is freed right away
+```
+
+This is how a value outlives the scope that made it: it goes on the heap, and its ownership
+passes to something that lives longer.
+
+A function can't return the ownership of one of its own locals, because the local ends with
+the call (8.9). It returns the value. So a function that changes what the caller owns takes
+it, and gives the result back:
+
+```go
+const dropFirst: (@^Node)^Node = (var @first: ^Node){
+    var @rest: ^Node = @first~.next;   // rest takes everything behind the first node
+    return rest;                       // rest ends here, so the caller owns it
+};                                     // first ends here too, and the first node is freed
+
+list = dropFirst(@list);               // list is left null at the call, then gets the rest back
+```
+
+(`Node` is the list node from 8.14.)
+
+**A function can return a borrower.** The borrower lives on after the call, so by rule 8.5
+it can't come from anything that ends with the call: a local, a copied parameter, or a value
+the function took over. It can come from a borrowed parameter, because what that points
+into lives in the caller:
+
+```go
+const firstValue: (&Node)&int = (var n: &Node){
+    return &n~.value;                // fine: it comes from n
+};
+
+const second: (&Node)&Node = (var n: &Node){
+    return &n~.next~;                // fine: the node after the one n borrows
+};
+
+const bad: (&Node)&int = (var n: &Node){
+    var local: int = n~.value;
+    return &local;                   // ERROR: local ends with the call, and the result lives on
+};
+```
+
+At the call, the result counts as coming from everything that was lent to the function,
+because the caller only sees the type:
+
+- it can't outlive any of the borrowed arguments (8.5);
+- if any of them is a `const`, the result has to be a `const` borrower (8.6);
+- it counts as having followed the owners on the way to what was lent, and every owner
+  inside it, because the compiler doesn't know how deep the function went (8.12).
+
+```go
+var v: &int = firstValue(&list~);    // v comes from list's data
+list = makeNode(9);                  // ERROR: v is used below
+v~
+```
+
+A returned borrower can still change what lies beyond itself:
+
+```go
+var cur: &Node = second(&list~);
+cur~.next = makeNode(9);             // fine: reached through cur itself
+```
+
+With two borrowed arguments the type can't say which one the result came from, so it counts
+as coming from both.
+
+The same holds when an argument borrows a value made on the spot (8.4). That value is freed
+at the end of the statement, so the result can't be kept past it:
+
+```go
+var gone: &int = firstValue(&makeNode(1)~);   // ERROR: the new node is freed at the end of
+                                              // this line, but gone would still be there
+```
+
+**(needs review) A borrower that is given back always comes from a parameter.** It can't come
+from a variable outside the function either, such as a top-level `var`: the caller sees only
+the type, and couldn't tell what the result points at.
+
+**(needs review) An argument that holds borrowers lends what they borrow.** An array or a struct
+of borrowers, an `any` that holds one, and a function that uses variables from around it all
+count this way. When such an argument is read-only (8.6), the result is read-only as well, as
+with a `const` that is lent. So a borrower that is taken out of such an argument and given back
+still has an origin:
+
+```go
+const head: ([2]&int)&int = (const bs: [2]&int){
+    return bs[0];              // fine: what bs[0] borrows lives in the caller
+};
+
+var sides: [2]&int = [&left, &right];  // left and right are the vars from 8.4
+var h: &int = head(sides);     // h comes from what sides borrows: left and right
+```
+
+**An ownership inside another value is lent, not taken.** A parameter takes a value over only
+when the argument is the ownership itself, handed to a parameter that asks for it.
+**(needs review)** An ownership that sits inside an array, a struct or another value goes to the
+function as an ownership (8.9): the function can follow it, and a `var` parameter can change or
+take the variable's value through it. For the caller it counts like a borrower inside the
+argument: the result comes from it, and the call may change or take what it points at (8.12).
+
+**(needs review) A result that holds a pointer counts like a borrower that came back.** The
+caller sees only the type of a result. When that type holds a borrower or an ownership (8.5),
+the result comes from everything that was lent to the call. A pointer that lies behind a `^`
+in the type doesn't count: `copyLinks` in 8.15 gives back a `^Link` whose `prev` borrowers
+sit inside heap values, where the compiler doesn't follow them (8.17), so the copy is a value
+of its own. What a function's own lines put behind a `^` is checked inside that function
+(8.5). What a called function put there from what it was lent is not followed by the caller:
+that case is on the list in 8.17. Whether a result can only read is another question, and
+there every borrower that `=` copies counts, also one behind a `^`: such a result is read-only
+when something read-only was lent to the call (8.6). A result that holds a function follows
+7.8. A result that holds none of these is a plain copy, and it lives as long as the holder it
+is put in.
+
+**(needs review) A variable that is lent for change can be given what else was lent.** A function
+can store what came in through one parameter behind a pointer that came in through another
+(8.5). So after a call, a variable that was lent with `&` to a parameter that may change it,
+and that holds a borrower, an ownership or a function (8.5), counts as holding something that
+comes from every other argument of the call, the way a result does. It can't outlive those
+arguments, and it counts as having followed what they followed (8.12). What lies behind a `^`
+in the variable doesn't count, as for a result.
+
+```go
+const aim: (&&int, &int)void = (var slot: &&int, var v: &int){ slot~ = v; };
+
+var b: &int = null;
+{
+    var x: int = 5;
+    aim(&b, &x);               // ERROR: after the call b may borrow x, and x ends before b
+}
+```
+
+**(needs review) What came back can still change what was lent.** A `var` borrower that a call
+gave back, and a function that it gave back, are still there when the call is over. For rule
+8.12:
+
+- An owner that is reached through such a borrower counts as what was lent to the call, or
+  any owner inside it. The borrower itself never followed what lies beyond it, so
+  `cur~.next = makeNode(9);` above is fine. Another pointer that came from the same list may
+  have followed it.
+- A call of such a function counts as lending the same things again, to the same parameters.
+  It may change what a `var` parameter was lent, and it is a use of every pointer that was
+  handed over.
+
+### 8.14 A linked list, step by step
+
+A node can't hold another node directly, because it would have no fixed size. It holds a
+heap owner of the next node (struct types are in section 9):
+
+```go
+const Node: type = {value: int, next: ^Node};
+
+const makeNode: (int)^Node = (const v: int){
+    var n: ^Node = ^{ value: int = v; next: ^Node = null; };
+    return n;
+};
+```
+
+**Building.** Each node is owned by the `next` in front of it, so the whole chain belongs
+to `list`:
+
+```go
+var list: ^Node = makeNode(1);         // list owns the node holding 1
+list~.next = makeNode(2);              // that node's next owns the node holding 2
+list~.next~.next = makeNode(3);        // and that node's next owns the node holding 3
+
+list~.next~.next~.value                // 3
+```
+
+When `list` ends, the first node is freed, and every node behind it with it.
+
+**Removing a node.** The node holding 3 moves up into the place of the node holding 2:
+
+```go
+@list~.next = @list~.next~.next;
+```
+
+Both sides are the ownership of a `next` field, so both are `@^Node`.
+
+1. The right side is taken first: the node holding 3 leaves the second node's `next`,
+   which is left `null`.
+2. `list~.next` takes it over. Its old value, the node holding 2, has no owner now, so it
+   is freed. Its `next` is already `null`, so nothing else goes with it.
+3. The list is now 1, 3.
+
+The same line with no marks, `list~.next = list~.next~.next;`, ends with the same list but
+does more work: it copies the node holding 3, and then frees the node holding 2 together
+with the original node holding 3.
+
+**Replacing a node.** An owner that is given a new value frees the one it had, and
+everything behind it:
+
+```go
+list~.next = makeNode(9);              // the old second node, and all the nodes behind it, are freed
+```
+
+**Adding a node at the front.**
+
+```go
+var first: ^Node = makeNode(0);
+@first~.next = @list;                  // first's next takes over the whole old list, and list is null
+@list = @first;                        // list takes over the new first node, and first is null
+```
+
+**Copying the list.** `=` makes a complete copy (8.8):
+
+```go
+var other: ^Node = list;               // every node is copied; other shares nothing with list
+```
+
+**Walking the list.** A function borrows an owner, checks it for `null`, and calls itself
+on the next one:
+
+```go
+const length: (&^Node)int = (const owner: &^Node){
+    const cases: ?(&^Node)int = [
+        (const o: &^Node){ return 1 + length(&o~~.next); },    // false: count this node, go on
+        (const o: &^Node){ return 0; }                          // true: no node here, so stop
+    ];
+    return cases[owner~ == null](owner);
+};
+
+length(&list)                          // the number of nodes
+```
+
+`o~` is the owner and `o~~` is the node it owns, so `&o~~.next` borrows the next owner.
+Nothing is copied and nothing changes owner on the way.
+
+### 8.15 Two links to one value
+
+Two links can lead to the same value when one **owns** it and the other **borrows** it.
+That makes a second link possible: a list that can be walked backwards, or a tree node that
+points back at its parent.
+
+```go
+const Link: type = {value: int, next: ^Link, prev: &Link};    // next is owned, prev is borrowed
+
+var a: ^Link = ^{ value: int = 1; next: ^Link = null; prev: &Link = null; };
+a~.next = ^{ value: int = 2; next: ^Link = null; prev: &Link = &a~; };
+
+a~.next~.prev~.value                           // 1: forward to the second node, back to the first
+```
+
+The second node is owned by the first node's `next`, and its `prev` borrows the first
+node. A value never has two owners: any second link is a borrower.
+
+The rule from 8.5 still applies: the borrower can't outlive the owner. It holds here,
+because the second node is freed whenever the first one is. Removing or replacing a node
+that another node's `prev` still borrows is the programmer's job to get right (8.17).
+
+**Copying a list like this takes a function of its own.** A plain `=` copies field by field
+(8.8), so each copied node's `prev` would still borrow a node of the original. The copy
+function makes the plain copy, then sets every `prev` inside it:
+
+```go
+const linkBack: (&^Link, &Link)void = (var owner: &^Link, var before: &Link){
+    const cases: ?(&^Link, &Link)void = [
+        (var o: &^Link, var back: &Link){
+            o~~.prev = back;                  // this node's prev borrows the node before it
+            linkBack(&o~~.next, &o~~);        // go on: the next owner, with this node before it
+        },
+        (var o: &^Link, var back: &Link){ }   // no node here, so stop
+    ];
+    cases[owner~ == null](owner, before);
+};
+
+const copyLinks: (&^Link)^Link = (var from: &^Link){
+    var made: ^Link = from~;                  // field by field: every node is copied
+    linkBack(&made, null);                    // set every prev inside the copy
+    return made;
+};
+
+var b: ^Link = copyLinks(&a);                 // b is a separate list, with its own prev links
+```
+
+**(adjusted)** `from` is a `var` borrower, although `copyLinks` only reads the list. Until
+`linkBack` has run, the `prev` links in `made` borrow nodes of the original list. A value with
+borrowers inside it doesn't go from a read-only borrower into a `var` (8.6), so the list that
+is copied this way is a `var`.
+
+### 8.16 What the compiler rejects, and what is checked while running
+
+**Rejected before the program runs:**
+
+| Line | Reason |
+|---|---|
+| `var p: ^int = 5;` | `5` is an `int`, not a `^int`: write `^5` |
+| `var x: int = p;` where `p` is a `^int` | write `p~` |
+| `var b: &int = count;` and `bump(n);` | an `int` is not an `&int`: write `&count`, `&n` |
+| `var b: &int = &p;` where `p` is a `^int` | `&p` borrows the owner itself (`&^int`): write `&p~` |
+| `var q: ^int = b;` where `b` is an `&int` | a borrower can't become an owner: `^b~` makes a copy |
+| `x~` where `x` is a plain `int` | there is nothing to follow |
+| `var b: &int = &3;` | the `3` is gone after its statement, so it can be borrowed only as an argument (8.4) |
+| `var top: &int = &three(7)[0];` | the borrower would outlive what it borrows |
+| `a = &inner;` where `inner` is in an inner block | the borrower would outlive what it borrows |
+| `var a: &int = &limit;` where `limit` is `const` | a borrower of a `const` has to be `const` |
+| `c~ = 11;` where `c` is a `const` borrower | a `const` borrower can only read |
+| `look = &limit;` where `look` is `const` | a `const` borrower always borrows the same thing |
+| `table~[0] = 9;` where `table` is a `const` owner | a `const` owner's value can't change |
+| `q = @p;` and `@q = p;` | the two sides have different types: a move has an ownership on both sides |
+| `var @t: ^int = @fixed;` where `fixed` is `const` | a `const` has no ownership to give |
+| `var @t: ^int = @b~;` where `b` is a borrower | a borrower can read and change, but not take |
+| `return @local;` | the ownership would outlive its variable |
+| `var h: @^Node = @makeNode(1);` | the value has no variable, so the ownership would outlive it |
+| `p = ^6;` where a borrower made with `&p~` is used below | it would free what the borrower points at (8.12) |
+| `var @inner: ^T = @data;` where a borrower of `data~` is used below | it would move what the borrower points at (8.12) |
+| `take(@list);` or `reset();` where a pointer into `list` is used below | the call takes or changes what the pointer points at (8.12) |
+| `return &local;` | the borrower would outlive the local (8.13) |
+| `return (){ return x; };` where `x` is declared inside the function | `x` would die before the function that uses it (7.8) |
+| `var v: &int = firstValue(&makeNode(1)~);` | the result would outlive the node made on the spot (8.13) |
+| `take(big);` where the parameter asks for an ownership | `big` is a `^[1000]int`, not an `@^[1000]int`: write `@big` |
+| `var y: &int = x;` where `x` is a `const` borrower **(needs review)** | a copy of a `const` borrower can only read (8.6) |
+| `var mine: [2]&int = views;` where `views` is a `const` **(needs review)** | the borrowers inside a `const` can only read (8.6) |
+| `var loose: any = wrap(&int)(c);` where `c` is a `const` borrower **(needs review)** | the result can only read, because `c` can (8.6) |
+| `var copied: any = sealed;` where `sealed` is a `const` **(needs review)** | an `any` counts as holding a borrower, and a `const` one can only be read (8.6) |
+| `var changer: &int = unwrap(&int)(sealed);` where `sealed` is a `const` `any` | a borrower unwrapped from a `const` `any` is a `const` borrower (8.6) |
+| `var x: T = v[0];` in a generic function, where `v` is a `const` **(needs review)** | a `T` may have a borrower in it, and `v` can only be read (8.6) |
+| `first(@^int)` and `wrap(@^int)` **(needs review)** | a type parameter is never handed an ownership type itself (4.3) |
+| `run(&refill);` where `refill` changes an owner that a pointer used below followed **(needs review)** | a function that is handed over may be called (8.12) |
+| `renew();` where `renew` changes `q`, and `watch`, a pointer in a top-level variable, followed `q` **(needs review)** | a pointer that function bodies share is still in use when the body ends (8.12) |
+| `runStored();` where `runStored` calls a function held in a top-level variable, and a borrower made with `&list~` is used below **(needs review)** | a function whose note is fail safe counts as changing every variable outside it, also at a call by name (8.12) |
+| `c~ = ^6;` where `c` is a parameter, and a borrower made through another parameter of the same type is used below **(needs review)** | two pointers from outside may lead to the same owner (8.12) |
+| `addTo(&p~, renewP())` where `renewP` changes `p` **(needs review)** | a statement is still using what it has worked out (8.12) |
+| `return ^&local;`, and `slot~ = &local;` where `slot` came in through a parameter **(needs review)** | the line that stores a borrower behind a pointer is checked: the place may outlast `local`, whether `local` is a name of this call or of a call around it (8.5) |
+| `aim(&b, &x);` where `aim` may store its second argument through its first, and `b` outlasts `x` **(needs review)** | a variable that is lent for change can be given what else was lent (8.13) |
+| `kept = b;` and `keep = f;` where `b` and `f` are parameters, and `kept` and `keep` outlast the call **(needs review)** | what comes in through a parameter is only known to last as long as the call (8.5) |
+| `return &list~;` where `list` is a top-level `var` **(needs review)** | a borrower that is given back comes from a parameter (8.13) |
+| `p = ^6;` where a function called below uses a borrower made with `&p~` **(needs review)** | the call is a use of that borrower (8.12) |
+| `var @t: ^int = h;` where `h` is a `const` ownership **(needs review)** | a `const` ownership can only read (8.6) |
+| `var n: int = null;` **(needs review)** | `null` fits only a `^T`, an `&T` or an `@T` (8.10) |
+| `both[0] = &inner;` where `both` outlives `inner` **(needs review)** | a value that holds a borrower can't outlive what the borrower borrows (8.5) |
+| `keep = makeAdder(five);` inside a function, where `keep` is a top-level `var` | `keep` outlasts the frame that holds the kept block: a function with kept state is a borrower of that block (7.8) |
+| `var again: ()int = next;` where `next` keeps parameters | copying a function that keeps parameters is an error: borrow it with `&next` (7.8) |
+
+**Checked while the program runs:**
+
+| Line | Fails when |
+|---|---|
+| `p~`, for a heap owner or a borrower | `p` is `null` |
+| `h~`, for an ownership **(needs review)** | `h` is `null` (8.10) |
+| `var @q: ^int = h;`, `@q = h;`, `take(h)`: taking a value through an ownership **(needs review)** | `h` is `null` (8.10) |
+| `^v`, and `=` where it copies a heap owner **(needs review)** | there is no room left on the heap (8.3) |
+| `f(&limit)`, a call through a variable that lends a `const` | the parameter it goes to is a `var` in the function that runs (8.6) |
+| `var g: ()int = f;`, a copy of a function that the compiler can't see | the function keeps something (7.8) |
+| `f()`, a call through a variable | the function it holds touches something that a pointer still used below depends on (8.12) |
+
+**(needs review)** Every check the compiler makes, and every check made while running, is listed
+in Appendix B.
+
+### 8.17 What the compiler doesn't catch
+
+Rule 8.12 follows a pointer that is held in a variable. It can't follow these:
+
+- **A borrower kept inside a heap value** (the `prev` in 8.15) whose target is removed
+  first. It isn't a variable, so the compiler can't see when it will be used. Removing or
+  replacing a node that another node's `prev` still borrows is the programmer's job.
+  **(needs review)** The same holds for every borrower, ownership or function that lies behind a
+  pointer, from the line that stored it on. That line itself is checked as far as the
+  compiler sees both ends (8.5). It can't see what came in through a parameter and is stored
+  behind a pointer in a heap value, the way `linkBack` stores `back`, or what a value went
+  through inside a call. A variable that is lent for change is counted by the caller (8.13).
+- **A copy of a value whose borrowers point back into itself,** like the `prev` list in
+  8.15. Copying is field by field (8.8), so the copy's `prev` links borrow nodes of the
+  original until they are set again.
+  **(needs review)** A move and a `return` put the plain parts of a value in a new place in the
+  same way (8.9, 8.13). So the same holds for a value that is moved or given back while a
+  borrower inside it points at another part of it, where the compiler can't see that
+  borrower. A kept block that is handed back one frame is such a value (7.8).
+
+So a helper function can put a borrower behind a `^` where a line of the
+caller's own would be turned away. `return ^&local;` is an error, because that one line shows
+both ends (8.5). Split over two functions, the same store is not caught:
+
+```go
+const boxUp: (&int)^&int = (var b: &int){ return ^b; };   // fine: what b borrows came in through a parameter
+
+const lost: ()^&int = (){
+    var local: int = 5;
+    return boxUp(&local);      // not caught: the borrower of local lies behind the ^ of what boxUp gave back
+};
+```
+
+**(needs review) What happens in these cases.** A pointer can then be followed, or a function
+called, after what it points at or keeps is gone, or has gone to another owner. That is not
+checked while the program runs either: it reads or changes whatever is at the old address, and
+what the program does then isn't defined. These are the only mistakes that neither the
+compiler nor a check while running catches.
+
+A `const` is not on this list. A `const` that is lent to a function held in a variable is
+checked at the call, while the program runs (8.6), and a `const` struct needs no more than
+that (9.3). So a `const` never changes. **(needs review)** Only the two
+mistakes above can still reach one: a borrower or a function that the compiler couldn't
+follow may still lead to a value that a `const` now holds.
+
+**(adjusted)** Two functions given back by one call that use the same `var` parameter are not
+on this list either. They share the kept parameter (7.8).
+
+Rule 8.12 also turns away some code that is safe, such as two borrowers returned from the
+same list when one of them is used to change the list. That code has to be reordered.
+
+### 8.18 Underneath: addresses
+
+`^T`, `&T` and `@T` are all pointers. They differ in what they may do with what they point
+at:
+
+| | `^T` | `&T` | `@T` |
+|---|---|---|---|
+| holds | an address | an address | an address |
+| can point at | only a value on the heap | anything that has an owner: a variable, an array element, a map entry, a field, or a value on the heap | a variable, a field, an element or a map entry **(needs review: a map entry)** |
+| frees what it points at | yes | never | never, but the value can be taken out through it |
+| made with | `^v` | `&x` | `@x` |
+| followed with | `p~` | `p~` | `p~` |
+
+An owning pointer can only point at the heap, because a value on the stack already has an
+owner: the holder it lives in.
+
+- **A `^T` holder** has a place on the stack like every name. That place holds the
+  **address** of the value on the heap, and `p~` goes to that address.
+- **A `&T` holder** holds the address of what it borrows: a variable, an array element, a
+  map entry, a field, or a value on the heap.
+- **`null`** is "no address".
+- **`=` between two heap owners** makes room on the heap and copies the value into it.
+- **An `@T` holder** holds the address of the variable it is the ownership of. For
+  `h: @^int` that is a pointer to a pointer, and each `~` in `h~~` is one jump.
+- **A move** copies the heap address out of the old owner into the new one and sets the old
+  owner to `null`. The value itself doesn't move.
+- **A link to an unsized array** (`^[]int`, `&[]int`) holds two things: where the elements
+  start, and how many there are. That is how `v~.length` works.
+- **(needs review) A link to a map or an `any`** holds one address, and the value there holds its
+  own size: a map the number of its entries (6.4), an `any` its type (4.5). An ownership of an
+  unsized array, `@[]T`, holds the address of the variable, like every ownership, and the
+  variable holds its length (5.7).
+
+---
+
+## 9. Structs
+
+### 9.1 A struct type
+
+A struct's type is its shape: its fields in braces, each with a name and a type. Like every
+type, it is named with `const` (4.1):
+
+```go
+const Point: type = {x: int, y: int};
+const Settings: type = {debug: bool, size: int};
+```
+
+The names belong to the type. `.` reaches a field by its name, and the compiler finds the
+name in the type: `p.x` for a `Point`. **(needs review)** Two struct types are the same type when
+they have the same fields: the same names, with the same types, in the same order (3.6). A
+struct type names each field once.
+
+### 9.2 Making a struct value
+
+A struct value is a block of fields. Each field is written with its name, its type and its
+starting value:
+
+```go
+var p: Point = {
+    x: int = 1;
+    y: int = 2;
+};
+```
+
+A struct is declared with `const` or `var`, like any other value. The fields carry no
+`const` or `var` of their own (9.3).
+
+**A struct value is just a bundle of values.** A struct's fields are not names in scope: not
+for a function written in the struct (9.6), and not for the other fields. Each field's value is
+an ordinary value, worked out where the struct value is written:
+
+```go
+const Span: type = {a: int, b: int};
+var span: Span = { a: int = 1; b: int = a + 1; };   // ERROR: b can't see a
+```
+
+**A field name never clashes with any other name.** A field is only ever reached with a dot
+(`p.x`, `c~.count`), so it is not a name in scope, and it can't shadow anything (2.8):
+
+```go
+var x: int = 5;                              // a top-level x
+var p: Point = { x: int = 1; y: int = 2; };  // fine: the field x is only reached as p.x
+x                                            // 5: the top-level x
+p.x                                          // 1
+```
+
+The block is checked against the type: each field is written with the name and the type that
+the type gives it. **(needs review)** The block has every field of the type, in the type's order.
+
+```go
+var q: Point = { x: int = 1; };                   // ERROR: a Point has two fields
+var r: Point = { x: int = 1; y: bool = true; };   // ERROR: the field y of a Point is an int
+var u: Point = { a: int = 1; b: int = 2; };       // ERROR: the fields of a Point are x and y
+```
+
+The type says what the fields are, and the value says what each one starts with. A field in
+the value is written like every declaration (2.1), with its name, its type and its value, so a
+block can be read on its own:
+
+| | Type (after `:`) | Value (after `=`) |
+|---|---|---|
+| function | `(int, int)int` | `(const x: int, const y: int){ … }` |
+| struct | `{x: int, y: int}` | `{ x: int = 1; y: int = 2; }` |
+
+A function's type leaves the parameter names out, because only the function itself uses
+them. The one name it can hold is the name of a type parameter that a later part of the type
+uses, as in `(T: type, []T)T` (4.3). A struct's type has the field names, because everything
+that holds the struct reaches its fields by name.
+
+```go
+const Size: type = {w: int, h: int};
+
+var box: Size = p;                 // ERROR: p is a Point, and a Size has the fields w and h
+```
+
+`Point` is a type. It is not a value of that type, and it is never called:
+
+```go
+var p: Point = Point;              // ERROR: Point is a type, not a value of type Point
+var p: Point = Point(1, 2);        // ERROR: a type is never called
+```
+
+To make a struct from inputs, write an ordinary function that returns one:
+
+```go
+const makePoint: (int, int)Point = (const x: int, const y: int){
+    var p: Point = { x: int = x; y: int = y; };   // each field takes the parameter of the same name
+    return p;
+};
+
+var corner: Point = makePoint(3, 4);   // x is 3, y is 4
+```
+
+### 9.3 Fields follow the struct's `const` or `var`
+
+`.` reaches a field. The word the struct is declared with covers every field in it:
+
+| Declared with | Its fields |
+|---|---|
+| `var` | can all be changed |
+| `const` | can never be changed |
+
+```go
+var p: Point = { x: int = 1; y: int = 2; };
+const origin: Point = { x: int = 0; y: int = 0; };
+
+p.x                    // 1
+p.x = 5;               // fine: p is a var
+origin.x = 1;          // ERROR: origin is const
+```
+
+Arrays and maps follow the same rule (5.2, 6.2).
+
+**A `const` struct is protected by the normal `const` rule.** A function in a struct has no
+way of its own to reach the struct. It works on it through a parameter (9.6), so
+`counter.add(&counter)` lends `counter` to a `var` borrower, and that is an error when `counter`
+is `const` (8.6). A function that uses the struct's own name can't change a `const` either, as
+with any name:
+
+```go
+const fixed: Counter = {
+    count: int = 0;
+    add: (&Counter)void = (var c: &Counter){ c~.count = c~.count + 1; };
+};
+
+fixed.count = 9;               // ERROR: fixed is const
+fixed.add(&fixed);             // ERROR: add's parameter is a var borrower, and fixed is const
+
+const frozen: Counter = counter;   // a copy of the var struct counter from 9.6
+frozen.add(&frozen);           // fails while running: the same mistake, where the compiler can't see the function
+```
+
+(`Counter` is the struct type from 9.6.) The compiler sees the function in `fixed`, because the
+struct is a `const` whose block is written out (7.2). In `frozen` it sees only the type, so the
+check is made at the call, while the program runs, as for every call through a variable that
+lends a `const` (8.6).
+
+### 9.4 Setting a struct to another struct
+
+A `var` struct can be given a whole new value of the same type. Every field is set:
+
+```go
+p = origin;                        // p.x is now 0 and p.y is now 0
+p = { x: int = 7; y: int = 9; };   // a block works too
+origin = p;                        // ERROR: origin is const
+```
+
+### 9.5 Singletons
+
+A singleton is a value whose struct type has no name. It's declared directly, like any
+other value:
+
+```go
+var settings: {debug: bool, size: int} = {
+    debug: bool = false;
+    size: int = 3;
+};
+
+settings.size = 5;          // fine: settings is a var
+```
+
+### 9.6 Functions inside a struct
+
+A function written in a struct value is an ordinary function. It sees only what any function
+sees: its own parameters, the top-level names of the file, and the parameters it keeps from the
+call around it (7.8). A function that works on its struct takes the struct as a parameter, like
+any other function. There is no `this`:
+
+```go
+const Counter: type = {count: int, add: (&Counter)void};
+
+var counter: Counter = {
+    count: int = 0;
+    add: (&Counter)void = (var c: &Counter){
+        c~.count = c~.count + 1;     // fine: reaches count through its parameter
+    };
+};
+
+counter.add(&counter);               // count is now 1
+
+var bad: Counter = {
+    count: int = 0;
+    add: (&Counter)void = (var c: &Counter){
+        count = count + 1;           // ERROR: fields aren't names in scope; use c~.count
+    };
+};
+```
+
+A function in a struct value that is written inside a function can also use
+that function's names, like any function made there (7.8). "What any function sees" includes
+them.
+
+**Copying a struct copies its fields, nothing more.** A function field is copied like any
+function value, under the rule that copying a function that keeps parameters is an error (7.8):
+
+```go
+var other: Counter = counter;        // every field is copied: other has its own count, and the same add
+other.add(&other);                   // other.count is now 2, and counter.count is still 1
+other.add(&counter);                 // counter.count is now 2: add works on the struct it is lent
+```
+
+**(needs review) Why `counter.add(&counter)` is allowed.** The line reads a function out of
+`counter` and lends `counter` to that function in the same call. The borrowing rules allow it:
+
+- The value in front of the `(` is worked out first (2.9). It is an ordinary function value,
+  and it keeps nothing of `counter`: what a function keeps never sits in the struct that holds
+  the function (7.7). The call uses the function where it sits, and doesn't copy it.
+- `&counter` points at `counter` itself, so it followed no owner (8.12), and no other pointer
+  is in use.
+- The function may even give `c~.add` a new value while it runs. The code that is running is
+  part of the program, so nothing it uses is lost.
+
+### 9.7 A struct is copied, like every value
+
+Every declaration and every assignment copies the whole block:
+
+```go
+var q: Point = p;      // a full copy: q gets its own block
+q.x = 5;               // p.x doesn't change
+```
+
+To use the same struct instead of a copy, borrow it (section 8):
+
+```go
+var same: &Point = &p;
+same~.x = 9;           // p.x is now 9
+```
+
+A struct can hold heap owners and borrowers as fields. A linked list is built that way
+(8.14).
+
+Everything in section 8 works on a struct the way it works on any variable, field by field
+(8.8).
+
+A struct is a value like any other, so it goes in arrays and maps and in and out of
+functions:
+
+```go
+const sumOf: (Point)int = (const pt: Point){
+    return pt.x + pt.y;
+};
+sumOf(p)               // the function gets its own copy of p
+```
+
+### 9.8 Underneath: the variable is its block
+
+Writing a value on its own puts it on the stack and removes it again: `4;` adds 4 to the
+stack, and it's gone once the statement is done. A struct block works the same way.
+Writing
+
+```go
+{ x: int = 1; y: int = 2; };
+```
+
+lays its fields out on the stack one after another, and they're removed again. Saving the
+block in a variable keeps it: the variable's own place on the stack holds the whole block,
+just as an `int` variable holds its number. A field is found from the start of that block
+and its position in the shape (`{x: int, y: int}`: `x` first, `y` second).
+
+---
+
+## 10. Choosing and repeating
+
+A choice is made by a lookup. Capio has no loops: repeating is a function calling itself.
+
+### 10.1 Choosing by lookup: `?T`
+
+A pair (5.8) holds one value for `false` and one for `true`, and a `bool` picks between them.
+
+```go
+const sizes: ?int = [3, 10];           // false, then true
+const size: int = sizes[count > 10];   // 10 when count is over 10, otherwise 3
+```
+
+Both values in a pair are worked out before the lookup. To run code for only the
+chosen side, put **functions** in the slots: look up the function, then call it.
+
+```go
+const absOf: ?(int)int = [
+    (const k: int){ return k; },           // false: not below 0
+    (const k: int){ return 0 - k; }        // true: below 0
+];
+
+absOf[n < 0](n)        // pick the function for the answer, then call it
+```
+
+The slot for `false` is written first, because `false` is the first slot.
+
+### 10.2 Choosing between many: a map of functions
+
+For more than two cases, put one function per case in a map, with the case as the key.
+Looking up the key picks the function, and calling it runs that case. This does the job of
+a `switch`:
+
+```go
+const calc: (char, int, int)int = (const op: char, const a: int, const b: int){
+    const cases: {char}(int, int)int = {
+        '+': (const x: int, const y: int){ return x + y; },
+        '-': (const x: int, const y: int){ return x - y; },
+        '*': (const x: int, const y: int){ return x * y; }
+    };
+    return cases[op](a, b);            // pick the function for op, then call it
+};
+
+calc('+', 2, 3)        // 5
+calc('-', 2, 3)        // -1
+calc('*', 2, 3)        // 6
+```
+
+Every case is a key of the map. Looking up a key that isn't in the map fails while the
+program runs:
+
+```go
+calc('/', 2, 3)        // fails while running: '/' isn't a key of cases
+```
+
+The cases are ordinary values, so they can be named functions too:
+
+```go
+const cases: {int}(int, int)int = {1: add, 2: sub};
+cases[2](5, 3)         // 2
+```
+
+### 10.3 Repeating: a function that calls itself
+
+A function can call itself by its own name. A pair decides when to stop:
+
+```go
+const factorial: (int)int = (const n: int){
+    const cases: ?(int)int = [
+        (const k: int){ return k * factorial(k - 1); },    // false: keep going
+        (const k: int){ return 1; }                         // true: n is 0, so stop
+    ];
+    return cases[n == 0](n);
+};
+
+factorial(4)           // 24
+```
+
+The same shape goes through an array, one index at a time:
+
+```go
+const sumFrom: (&[]int, int)int = (const values: &[]int, const i: int){
+    const cases: ?(&[]int, int)int = [
+        (const v: &[]int, const k: int){ return v~[k] + sumFrom(v, k + 1); },   // false: add this one, go on
+        (const v: &[]int, const k: int){ return 0; }                            // true: past the end, so stop
+    ];
+    return cases[i == values~.length](values, i);
+};
+
+var scores: []int = [10, 20, 30];
+sumFrom(&scores, 0)    // 60
+```
+
+`sumFrom` borrows the array, so no call copies it (5.6).
+
+### 10.4 How deep a function can call itself **(needs review)**
+
+Every call that hasn't ended holds its parameters and names on the stack
+(2.6). The stack has a limit, set by the system the program runs on. A program that calls
+deeper than the stack allows fails while it runs (11.2), like any other check. A declaration
+needs room on the stack too, and it fails the same way when there is none left. `sumFrom` above
+has one call on the stack for each element, because every call still has an addition to do
+when the next call comes back.
+
+**The last call takes over the stack of the function that makes it.** When the last thing a
+function does is a call, its own parameters and names aren't needed any more, and neither are
+the kept blocks in its frame. So they end before that call starts, and the call uses their
+place on the stack. **(adjusted)** That is sooner than 2.6 and 8.11 say: a heap value that one
+of those names owns, or that a kept parameter in one of those blocks owns, is freed before the
+last call, and not at the `}`. A function that calls itself as its last step can repeat any
+number of times, and the stack doesn't grow.
+
+A call is the last thing a function does when both of these hold:
+
+| Condition | In detail |
+|---|---|
+| nothing comes after it | it is the whole value of a `return`, as in `return f(a, b);`. Or the function returns nothing, and the call is the last statement of its body |
+| nothing it uses lives in this call | What lives in this call is: the function's parameters and names, the heap values they own, the kept blocks in its frame (7.8), and the values made on the spot in the statement. An argument uses one of these when it is, or holds, a pointer to it or a function that uses it. The function that is called uses one when it keeps it. An ownership that a parameter of the called function takes over doesn't count, because its value has moved before the call starts (8.13) |
+
+The arguments, and the function to call, are worked out before the names end (2.9). The other
+values made on the spot in the statement are gone by then as well. When the last call gives
+back a function that keeps parameters (7.8), its kept block goes to the frame of the caller of
+the function that made the last call, as if that caller had made the call itself. In every other
+case the call is an ordinary one, and the names end after it, as in 2.6.
+
+```go
+const sumTo: (&[]int, int, int)int = (const values: &[]int, const i: int, const total: int){
+    const cases: ?(&[]int, int, int)int = [
+        (const v: &[]int, const k: int, const t: int){ return sumTo(v, k + 1, t + v~[k]); },   // false: go on
+        (const v: &[]int, const k: int, const t: int){ return t; }                              // true: past the end
+    ];
+    return cases[i == values~.length](values, i, total);
+};
+
+sumTo(&scores, 0, 0)   // 60, and the stack stays as small for a million elements
+```
+
+Every call here is a last call. The running total is handed on as an argument, so nothing is
+left to do when a call comes back. `values` and `v` borrow the caller's array, not a name of
+`sumTo`, so they don't hold the stack either.
+
+---
+
+## 11. A program is one file
+
+A program is one file, and the file's name ends in `.my`. Its top-level declarations are the
+program's names. So you can always tell where a name comes from: it is declared in this file,
+or it is a built-in name (2.7).
+
+Inside the file, `{ }` blocks still make smaller scopes (2.6).
+
+### 11.1 Order, where statements go, and `main`
+
+- **A function's body can use any top-level name,** wherever in the file it is declared. A
+  body runs only when the function is called, so two functions can call each other. The value
+  in a top-level declaration still uses only names declared above it.
+- **Statements that run, such as `countUp();`, can stand at the top level of the file,**
+  between the declarations, as well as inside a function. The file runs from the top.
+
+**It is good practice to put what the program does in a `const main: ()int`.** It isn't required,
+and code can still go outside it:
+
+```go
+const area: (float)float = (const side: float){
+    return side * side;
+};
+
+const main: ()int = (){
+    const size: float = area(2.0);
+    return 0;
+};
+```
+
+When the file declares `main`, the program runs the file's statements from the top, then calls
+`main`. The `int` it returns is the program's result, `0` when everything went well.
+
+**(needs review) When the top-level names are set up.** The top-level lines of the file are
+worked out in order, from the top down, declarations and statements together. The value of a
+declaration is worked out when its line is reached:
+
+```go
+var count: int = 0;
+print("start\n");                  // runs after count is set up, and before total
+var total: int = count + 1;
+```
+
+**(needs review)** Three kinds of top-level name are ready from the start, because nothing has to
+run to make them: a `const` whose value is a function value written out, a `const` whose value
+is a written value (3.2) or an array, pair or map value made only of written values, such as
+`const limit: int = 10;` and `const primes: [3]int = [2, 3, 5];`, and a type name (4.2). Every
+other top-level name is set up when its line is reached: every `var`, and every `const` whose
+value has to be worked out.
+
+**(needs review)** A function's body can use top-level names declared below it, so a call could
+reach a name that isn't set up yet. The compiler rejects that call: **a call at the top level
+can run only when every top-level name its function uses is ready, or is declared above the
+call.** The compiler reads the function for this, the functions it calls by name, and the
+functions that are handed to it, as in 8.12. A call through a variable (7.2), and a function
+handed over that the compiler doesn't see, are checked while the program runs instead, by the
+note beside the function's code, which says which top-level names the function uses (7.7).
+The call fails when one of them isn't set up yet, and prints `name used before it is set up`
+(11.2). A function whose note is fail safe counts as using every top-level name, at a call by
+name as well, so a call of one is turned away while a top-level name that isn't ready from the
+start is declared below it:
+
+```go
+const readLate: ()int = (){ return late; };
+var hold: ()int = readLate;
+const viaHold: ()int = (){ return hold(); };
+
+const early: int = readLate();     // ERROR: readLate uses late, which is set up below this line
+const alsoEarly: int = viaHold();  // ERROR: viaHold calls through hold, so its note is fail safe, and late is below
+var late: int = 5;
+const onTime: int = readLate();    // fine: late is set up by now
+```
+
+**(needs review) The rules for `main`.**
+
+- If the file declares a top-level `main`, it has to be a `const` of type `()int`.
+- The program runs the top-level lines of the file from the top down, and then calls `main`.
+  That call counts as one that the top level makes after its last line (8.12).
+- The `int` that `main` returns is the program's status. A status is a number from 0 to 255:
+  the `int` is converted the way `convert(int, uint8)` converts it (4.4), and a number outside
+  that range fails in the same way (11.2).
+- A file with no `main` ends after its last line, with status 0.
+- `exit` ends a program before that (11.3).
+
+**(needs review) Where the top-level names live.** The top level of the file has a frame of its
+own, like a call (7.7). It is on the stack, like every value whose type has no `^` (2.6), below
+everything that runs afterwards, and it lasts until the program ends. Every top-level `var`
+lives there, and so does every `const` that isn't ready from the start, and every kept block of
+a call made at the top level (7.8). A name that is ready from the start is part of the program
+itself. So nothing goes on the heap out of sight, and a top-level value with no size in its
+type (5.3) takes its size from its first value, like any other.
+
+### 11.2 When a check fails while the program runs **(needs review)**
+
+The compiler catches most mistakes. A mistake that depends on a value the
+program only has while it runs is checked at the line where it happens, and Appendix B lists
+every such check. All of them fail in the same way:
+
+1. **The program stops at once.** Nothing after the failing step runs: not the rest of the
+   line, and not the rest of `main`.
+2. **One line goes to the error output,** saying what failed and where. Its form is
+   `error: FILE:LINE: REASON`. `FILE` is the name of the source file, with its `.my` and
+   without the folders in front of it. `LINE` is the line, counted from 1, of the operator,
+   bracket or call that failed. For a failed assignment or declaration it is the line of the
+   `=`, for a map value with a key written twice it is the line of the second of the two keys,
+   and for the status of `main` it is the line of the `return` that gave the number:
+
+   ```
+   error: sums.my:12: division by zero
+   ```
+
+3. **The program ends with status 1.**
+
+- Text that was printed before the failure has been written out (11.3).
+- The program's heap values are not freed one by one. All of its memory goes back to the
+  system together.
+- A failure can't be caught, and a program never goes on after one. A program that isn't sure
+  tests first, and the test is in the code:
+
+| To be sure that | Test first |
+|---|---|
+| a pointer can be followed | `p != null` (8.10) |
+| an index is in range | `i >= 0 && i < a.length` (5.2) |
+| a division works | `b != 0` (3.2) |
+| an `any` holds the type | `x.T == int` (4.5) |
+| a key is in a map | compare with the keys, which the code that made the map knows (6.3) |
+
+### 11.3 Output, input and ending the program **(needs review)**
+
+Three built-in functions connect a program to the outside. Like `convert`,
+each one is an ordinary function value (4.4):
+
+| You write | Its type | What it does |
+|---|---|---|
+| `print` | `([]char)void` | writes a text to the output |
+| `read` | `()[]char` | gives the next line of the input |
+| `exit` | `(int)void` | ends the program with a status |
+
+**`print` writes exactly the `char`s it is given,** in order, to the program's standard
+output. It adds nothing, so a line break is written `\n`. What it writes is on the output
+before the next line of the program runs. Any other value is turned into text first (5.10):
+
+```go
+print("Hello\n");                                          // Hello, and a line break
+print(join(char)(convert(int, []char)(count), "\n"));      // the number in count, and a line break
+print(word[:]);                                            // a fixed array goes in as a slice (5.3)
+```
+
+**`read` gives the next line of the standard input,** as a new `[]char`: every `char` up to
+and including the next `\n`. When the input has ended, it gives a text with no `char`s, so an
+empty result always means the end:
+
+| The input holds | `read()` gives |
+|---|---|
+| `21` and a line break | `"21\n"` |
+| an empty line | `"\n"` |
+| `end`, and then the input ends without a line break | `"end"` |
+| nothing more | `""` |
+
+When the output can't be written, or the input can't be read, the program fails (11.2).
+
+**`exit` ends the program at once,** with the status it is given. `exit(0);` says that
+everything went well. The status is a number from 0 to 255, by the same rule as for `main`
+(11.1). Nothing after an `exit` runs. The compiler doesn't treat `exit` as special, so a
+function that returns a value still ends in a `return` (7.1).
+
+A whole program that uses all of this:
+
+```go
+// the whole file: it asks for a number and prints the number doubled
+const main: ()int = (){
+    print("Number: ");
+    const line: []char = read();                                        // for example "21\n"
+    const number: int = convert([]char, int)(line[:line.length - 1]);   // 21: the line without its \n
+    print(join(char)(convert(int, []char)(number * 2), "\n"));         // prints 42 and a line break
+    return 0;
+};
+```
+
+If what was typed isn't a whole number, the conversion fails (11.2): the program writes its
+error line and ends with status 1.
+
+---
+
+## 12. Putting it together
+
+```go
+// name long types once
+const Op: type = (int, int)int;
+const Row: type = [2]int;
+
+// functions are values
+const add: Op = (const x: int, const y: int){ return x + y; };
+const mul: Op = (const x: int, const y: int){ return x * y; };
+
+// a map of functions, an array of arrays
+const ops: {int}Op = {1: add, 2: mul};
+var table: [2]Row = [[1, 2], [3, 4]];
+
+// a function that takes a function and borrows an int
+const applyTo: (Op, &int, int)void = (const f: Op, var target: &int, const by: int){
+    target~ = f(target~, by);
+};
+
+applyTo(ops[1], &table[0][1], 10);  // table[0][1] is now 12
+applyTo(ops[2], &table[1][0], 2);   // table[1][0] is now 6
+
+// a struct type, a function that makes one, and a borrower to share it
+const Point: type = {x: int, y: int};
+
+const makePoint: (int, int)Point = (const x: int, const y: int){
+    var p: Point = { x: int = x; y: int = y; };
+    return p;
+};
+
+var corner: Point = makePoint(table[0][1], table[1][0]);   // x is 12, y is 6
+var c: &Point = &corner;
+c~.x = 0;                           // corner.x is now 0
+
+// a value on the heap: copied with =, moved by setting an ownership
+var big: ^Row = ^[1, 2];
+var copy: ^Row = big;               // copy gets its own array on the heap
+var @mine: ^Row = @big;             // mine takes big's array over, and big is left null
+```
+
+---
+
+## 13. Quick reference
+
+### Kinds of name
+
+| Kind | Declares | New value later? |
+|---|---|---|
+| `const` | a value that never changes | no |
+| `var` | a value that can change | yes |
+
+### Type forms
+
+| Form | Meaning |
+|---|---|
+| `int8` `int16` `int32` `int64` | signed whole numbers |
+| `uint8` `uint16` `uint32` `uint64` | unsigned whole numbers |
+| `float32` `float64` | numbers with a decimal point |
+| `int`, `uint`, `float` | everyday names for `int64`, `uint64`, `float64` |
+| `bool` | `true` or `false` |
+| `char` | one character |
+| `type` | the type of a type |
+| `any` | a value of any type, with its type inside |
+| `[n]T` | fixed array of `n` `T`s |
+| `[]T` | unsized array of `T`s: the length comes from the first value |
+| `?T` | pair: one `T` for `false`, one for `true` |
+| `{K}V` | map from `K` keys to `V` values |
+| `(P1, P2)R` | function taking `P1` and `P2`, returning `R` |
+| `(P1)void` | function returning nothing |
+| `(T: type)R` | function taking a type, called `T` in the rest of the type (4.3) |
+| `{a: T1, b: T2}` | struct with a field `a` of type `T1` and a field `b` of type `T2` |
+| `^T` | a `T` on the heap, owned by this holder |
+| `&T` | a `T` borrowed from another holder |
+| `@T` | the ownership of a `T` variable |
+
+### Operators
+
+| Operators | Work on | Give |
+|---|---|---|
+| `+` `-` `*` `/` | two numbers of the same type | a number of that type. On whole numbers, `/` drops the part after the decimal point **(needs review: `/`)** |
+| `%` **(needs review)** | two whole numbers of the same type | the remainder |
+| `-` in front **(needs review)** | one signed whole number or float | its negative |
+| `==` `!=` | two values of the same type, whatever the type | a `bool`: `==` compares what `=` copies (3.7) **(needs review: every type)** |
+| `<` `>` `<=` `>=` | two numbers of the same type, or two `char`s | a `bool` **(needs review: which types)** |
+| `&&` `\|\|` | two `bool`s | a `bool`: and, or. The right side is worked out only when it's needed |
+| `!` | one `bool` | a `bool`: not |
+| `( )` around a value | any value that isn't a type | the same value, worked out first |
+
+The order of operations is the usual one: what is behind a value (`p~`, `a[0]`, `f(1)`,
+`pt.x`), then what is in front of it (`!`, `-`, `^`, `&`, `@`), then `*`, `/` and `%`, then `+`
+and `-`, then the comparisons, then `&&`, then `||`. Operators in the same step go from left
+to right, and brackets go first (3.2). **(adjusted: `-`, `/` and `%` added)**
+
+### Ownership
+
+| You write | What it does |
+|---|---|
+| `^v` | puts a copy of `v` on the heap: a `^T` |
+| `&x` | borrows `x`: an `&T` |
+| `&a[i:j]` | a slice: borrows elements `i` up to `j` of `a`, as an `&[]T` (5.9) |
+| `@x` | the ownership of `x`: an `@T` |
+| `p~` | what a heap owner, a borrower or an ownership leads to |
+| `n = p;` | copies: `n` gets its own value, and `p` is unchanged |
+| `@n = @p;` | moves: `n` takes over what `p` owns, and `p` is left `null` |
+| `var @n: ^int = @p;` | the same, for a new variable |
+| `f(@p)` | the same, for a parameter that asks for an ownership: `p` is left `null` at the call |
+| `p = null;` | frees what `p` owns |
+| `p == null` | `true` when `p` owns nothing |
+
+### Choosing and repeating
+
+| You want | You write |
+|---|---|
+| to test several things at once | `count > 0 && count < 10` (3.2) |
+| to stop a function that returns nothing early | `return;` (7.3) |
+| to choose a value by a `bool` | a pair: `sizes[count > 10]` (10.1) |
+| to choose between many, like a `switch` | a map of functions: `cases[op](a, b)` (10.2) |
+| to repeat, like a loop | a function that calls itself (10.3) |
+| to repeat without the stack growing **(needs review)** | make the call the last thing the function does (10.4) |
+
+### Built-in functions
+
+| You write | Its type | What it does |
+|---|---|---|
+| `convert(float, int)` | `(float)int` | converts a value from the first type to the second (4.4) |
+| `wrap(int)` | `(int)any` | wraps a value in an `any` (4.5) |
+| `unwrap(int)` | `(any)int` | takes the value back out of an `any`, checked while running (4.5) |
+| `convert(int, []char)`, `convert([]char, int)` **(needs review)** | `(int)[]char`, `([]char)int` | writes a number as text, and reads one back (5.10) |
+| `join(char)` **(needs review)** | `([]char, []char)[]char` | joins two unsized arrays into a new one (5.11) |
+| `print` **(needs review)** | `([]char)void` | writes a text to the output (11.3) |
+| `read` **(needs review)** | `()[]char` | gives the next line of the input (11.3) |
+| `exit` **(needs review)** | `(int)void` | ends the program with a status (11.3) |
+
+Built-ins are first-class values like everything else: they can be named, stored and
+passed. **(needs review)** The built-ins that take a type have these types themselves: `convert`
+is an `(A: type, B: type)(A)B`, `wrap` a `(T: type)(T)any`, `unwrap` a `(T: type)(any)T` and
+`join` a `(T: type)([]T, []T)[]T` (4.3).
+
+### Values written in the code
+
+**(needs review)**
+
+| You write | It is |
+|---|---|
+| `42`, `0xFF`, `0b1010` | a whole number, in base ten, sixteen or two (3.2) |
+| `9.5`, `1.5e3` | a number with a decimal point (3.2) |
+| `'a'`, `'\n'` | a `char` (3.2) |
+| `"Carl"` | a text: the array value `['C', 'a', 'r', 'l']` (5.10) |
+| `true`, `false` | a `bool` |
+| `null` | a pointer that points at nothing (8.10) |
+| `[1, 2, 3]`, `[3, 10]` | an array value. Two values make a pair value when a `?T` is asked for (5.1, 5.8) |
+| `{1: true, 4: false}` | a map value (6.1) |
+| `{ x: int = 1; y: int = 2; }` | a struct value (9.2) |
+| `(const x: int){ return x; }` | a function value (7.1) |
+
+**(needs review)** A number, a `null`, an array, a text, a map value and a function value take
+their type from the place they are written for (3.8).
+
+### What copies and what shares
+
+| You write | What happens |
+|---|---|
+| `var b: int = a;` | `b` is a copy |
+| `b = a;` | `a`'s value is copied into `b` |
+| `f(a)` with a `const` or `var` parameter | the parameter is a copy |
+| `var q: ^int = p;` | `q` gets its own copy, in a new place on the heap |
+| `var h: ^int = ^a;` | the heap gets a copy of `a` |
+| `var x: int = p~;` | `x` is a plain copy of the heap value |
+| `var b: &int = &a;` | `b` borrows `a`: no copy |
+| `f(&a)` with an `&int` parameter | the parameter borrows the caller's `a`: no copy |
+| `var s: &[]int = &a[1:3];` | `s` borrows two elements of `a`: no copy (5.9) |
+| `var part: []int = a[1:3];` | `part` is a copy of two elements of `a` (5.9) |
+| `look(&makeBig(1)~)` | the parameter borrows the value made on the spot: no copy, and it is freed at the end of the statement |
+| `var h: @^int = @p;` | `h` is `p`'s ownership: no copy, and nothing moves |
+| `var @r: ^int = @p;` | `r` takes over what `p` owned: no copy, and `p` is left `null` |
+| a function uses `x` from around it | the function borrows `x`: no copy, and `x` can't die before the function (7.8) |
+| a function given back uses a parameter `p` of the call | the function keeps `p` in its kept block, in the frame of the call that receives the function. It is a borrower of that block, so it can't be stored where it outlasts the frame (7.8) |
+| `keep = adderOn(&topStep);` where the function keeps only the borrower `step` | the function has no kept block. It is a borrower of `topStep`, so it can go wherever one can (7.8) |
+| keeping a local in a function given back | a helper whose parameter takes the value: `return countFrom(@total);` (7.8) |
+| `var again: ()int = next;` where `next` keeps parameters | an error: a copy would share them. To share the function, borrow it: `var again: &()int = &next;` (7.8) |
+| `var keepLong: ^(int)int = ^makeAdder(five);` | the function goes on the heap, kept block included (7.8) |
+
+### What never changes
+
+| Thing | Fixed by |
+|---|---|
+| a `const` | its declaration |
+| a named type | its declaration |
+| the type of a value | its declaration |
+| the length of an array | the type `[n]T`, or the first value of a `[]T` |
+| the keys of a map | its first value |
+| what a `const` borrower borrows | its declaration |
+| the type inside an `any` **(needs review)** | its first value (4.5) |
+
+### What the compiler rejects
+
+| Line | Reason |
+|---|---|
+| `limit = 11;` | `limit` is `const` |
+| `var big: uint8 = 300;` | `300` doesn't fit in a `uint8` |
+| `var rate: float = 3;` | a float is written with a decimal point: `3.0` |
+| `var count: int = small;` where `small` is an `int8` | a value never changes type by itself: write `convert(int8, int)(small)` |
+| `count + small` | `+` needs two numbers of the same type |
+| `var n: t = 5;` where `t` is a `var` that holds a type | `t` holds a type, but it is not a type name (4.2) |
+| `int(3.0)` | a type is never called: write `convert(float, int)(3.0)` |
+| `describe(3);` | `describe` takes an `any`: write `wrap(int)(3)` |
+| `double(x);` where `x` is an `any` | write the unwrap: `double(unwrap(int)(x))` |
+| `var changer: &int = unwrap(&int)(sealed);` where `sealed` is a `const` `any` | a borrower unwrapped from a `const` `any` is a `const` borrower (8.6) |
+| `primes[0] = 7;` | `primes` is `const` |
+| `sizes[1]` where `sizes` is a `?int` | a pair is looked up with a `bool` |
+| `var sizes: [bool]int = [3, 10];` | the size of an array is a number (5.1) |
+| `count && ready` and `!count` where `count` is an `int` | `&&`, `\|\|` and `!` work on `bool`s: write `count != 0`, `count == 0` |
+| a function of type `(int)int` whose body runs to its end without meeting a `return` | a function that returns a value has to run into a `return` (7.1) |
+| `return 5;` in a function of type `()void` | a function that returns nothing gives no value back (7.3) |
+| `return;` in a function of type `(int)int` | a function that returns a value has to give one (7.3) |
+| `a = [1, 2, 4, 5];` where `a` has length 3 | an unsized array keeps its first length |
+| `scores.length = 4;` | a length never changes |
+| `&primes[2:1]` and `&primes[0:5]` where `primes` is a `[3]int` | a slice's start can't be after its end, or its end past the length (5.9) |
+| `seen[7] = true;` | `7` isn't a key, and a map can't grow |
+| `var p: ^int = 5;` | `5` is an `int`, not a `^int`: write `^5` |
+| `var x: int = p;` where `p` is a `^int` | write `p~` |
+| `var b: &int = count;` and `bump(n);` | an `int` is not an `&int`: write `&count`, `&n` |
+| `var b: &int = &3;` | the `3` is gone after its statement: it can be borrowed only as an argument (8.4) |
+| `var top: &int = &three(7)[0];` | the borrower would outlive what it borrows |
+| `var a: &int = &limit;` where `limit` is `const` | a borrower of a `const` has to be `const` |
+| `q = @p;` and `@q = p;` | the two sides have different types: a move has an ownership on both sides |
+| `var @t: ^int = @fixed;` where `fixed` is `const` | a `const` has no ownership to give |
+| `p = ^6;` where a borrower made with `&p~` is used below | it would free what the borrower points at (8.12) |
+| returning a function that uses a variable declared inside the function around it | that variable would die before the function (7.8) |
+| `keep = makeAdder(five);` inside a function, where `keep` is a top-level `var` | `keep` outlasts the frame that holds the kept block: a function with kept state is a borrower of that block (7.8) |
+| `var again: ()int = next;` where `next` keeps parameters | copying a function that keeps parameters is an error: borrow it with `&next` (7.8) |
+| `Point(1, 2)` | a type is never called |
+| `var p: Point = Point;` | `Point` is a type, not a value of type `Point` |
+| `var u: Point = { a: int = 1; b: int = 2; };` | the fields of a `Point` are `x` and `y`: a struct value is checked against the names and types of its type (9.2) |
+| `p.z` where `p` is a `Point` | a `Point` has the fields `x` and `y`: a field name comes from the struct's type (9.1) |
+| `origin.x = 1;` | `origin` is `const`, so none of its fields can change |
+| `count = count + 1;` in a function written in a struct value with a field `count` | fields aren't names in scope: the function takes the struct as a parameter and writes `c~.count` (9.6) |
+| `var span: Span = { a: int = 1; b: int = a + 1; };` | a field's value can't see the other fields (9.2) |
+| `fixed.add(&fixed);` where `fixed` is a `const` struct and `add`'s parameter is a `var` borrower | the normal `const` rule: a `const` isn't lent to a `var` borrower (9.3) |
+
+**(needs review)** These lines are rejected by the filled-in rules:
+
+| Line | Reason |
+|---|---|
+| `var count: int = 5;` where a `count` can already be seen | a name is declared only once (2.8) |
+| `a = b = 3;` | an assignment is a statement, not a value (2.9) |
+| `-level` where `level` is a `uint8` | a `-` in front works on signed numbers and floats (3.2) |
+| `var over: int8 = 100 + 100;` and `count / 0` | the answer doesn't fit, and division by zero: the compiler sees both (3.2) |
+| `0 < count < 10` | `0 < count` is a `bool`, and `<` doesn't work on a `bool` (3.2) |
+| `first(x.T)` | a type that decides a type is written out (4.3) |
+| `([]T, T: type)T` and `(T: type)bool` | in a function type, a type parameter's name is used only after it is given, and it is given only when something uses it (4.3) |
+| `a + b` where both are a `T` in a generic function | `+` doesn't work on every type (4.3) |
+| `wrapMore([1]T)` inside the generic function `wrapMore` | a function can't hand itself ever bigger types: every type has to be known before the program runs (4.3) |
+| `pick([1]T)` where `pick` is a variable | through a variable, a type parameter is handed only a type parameter as it is, or a type with none in it (4.3) |
+| `const Bad: type = {value: int, next: Bad};` | a type can't hold itself directly (4.6) |
+| `primes[3]` where `primes` is a `[3]int` | the last index is 2 (5.2) |
+| `seen[7]` where the keys of `seen` are 1 and 4 | `7` isn't a key (6.2) |
+| `var y: &int = x;` where `x` is a `const` borrower | a copy of a `const` borrower can only read (8.6) |
+| `var mine: [2]&int = views;` where `views` is a `const` | the borrowers inside a `const` can only read (8.6) |
+| `var loose: any = wrap(&int)(c);` where `c` is a `const` borrower | the result can only read, because `c` can (8.6) |
+| `var copied: any = sealed;` where `sealed` is a `const` | an `any` counts as holding a borrower, and a `const` one can only be read (8.6) |
+| `var x: T = v[0];` in a generic function, where `v` is a `const` | a `T` may have a borrower in it, and `v` can only be read (8.6) |
+| `first(@^int)` | a type parameter is never handed an ownership type itself (4.3) |
+| `run(&refill);` where `refill` changes an owner that a pointer used below followed | a function that is handed over may be called (8.12) |
+| `renew();` where `renew` changes `q`, and `watch`, a pointer in a top-level variable, followed `q` | a pointer that function bodies share is still in use when the body ends (8.12) |
+| `runStored();` where `runStored` calls a function held in a top-level variable, and a borrower made with `&list~` is used below | a function whose note is fail safe counts as changing every variable outside it, also at a call by name (8.12) |
+| `c~ = ^6;` where `c` is a parameter, and a borrower made through another parameter of the same type is used below | two pointers from outside may lead to the same owner (8.12) |
+| `addTo(&p~, renewP())` where `renewP` changes `p` | a statement is still using what it has worked out (8.12) |
+| `return ^&local;`, and `slot~ = &local;` where `slot` came in through a parameter | the line that stores a borrower behind a pointer is checked (8.5) |
+| `x = wrap(bool)(true);` where `x` was declared with `wrap(int)(3)` | an `any` keeps the type of its first value (4.5) |
+| `kept = b;` where `b` is a parameter and `kept` outlasts the call | what comes in through a parameter is only known to last as long as the call (8.5) |
+| `twice(addFive, 3)` where `addFive` keeps parameters | the argument would be a copy of a function that keeps parameters (7.8) |
+| `const early: int = readLate();` where `readLate` uses a name declared below | a top-level call can't reach a name that isn't set up yet (11.1) |
+| `const alsoEarly: int = viaHold();` where `viaHold` calls through a variable, and a name declared below isn't set up yet | a function whose note is fail safe counts as using every top-level name (11.1) |
+
+**(needs review)** The full list for ownership is in 8.16, and every check is in Appendix B.
+
+**(adjusted)** These checks happen while the program runs. A check that fails stops the
+program (11.2), and Appendix B lists all of them with what each one prints:
+
+| Line | Fails when |
+|---|---|
+| `convert(int, int8)(n)` and other conversions to a smaller or differently signed type | the value doesn't fit |
+| `unwrap(bool)(x)` and other unwraps of an `any` | `x` holds a different type |
+| `cases[op]` and other map lookups | the key isn't in the map |
+| `p~`, for a heap owner or a borrower | `p` is `null` |
+| `h~`, for an ownership **(needs review)** | `h` is `null` (8.10) |
+| `var @q: ^int = h;`, `@q = h;`, `take(h)`: taking a value through an ownership **(needs review)** | `h` is `null` (8.10) |
+| `&a[i:j]`, or the copy `a[i:j]` **(needs review: the copy)**, with `i` or `j` worked out while running | the slice is out of range (5.9) |
+| `a + b`, `a / b` and the other sums **(needs review)** | the answer doesn't fit the type, or a number is divided by zero (3.2) |
+| `a[i]` **(needs review)** | the index is out of range (5.2) |
+| `convert([]char, int)(t)` **(needs review)** | the text isn't a number, or the number doesn't fit (5.10) |
+| giving a new value to an unsized array, a map or an `any` **(needs review)** | the length, the keys or the type inside differ from the first value's (5.3, 6.3, 4.5) |
+| a map value with keys worked out while running **(needs review)** | two keys are equal (6.1) |
+| `^v`, `=` where it copies a heap owner, any call, and a declaration **(needs review)** | the heap or the stack is full (8.3, 10.4) |
+| the `int` that `main` returns, and `exit(n)` **(needs review)** | the number isn't from 0 to 255 (11.1, 11.3) |
+| `print(t)`, `read()` **(needs review)** | the output can't be written, or the input can't be read (11.3) |
+| a call of `convert` through a variable **(needs review)** | the two types have no conversion (4.4) |
+| `f(&limit)`, a call through a variable that lends a `const` | the parameter it goes to is a `var` in the function that runs (8.6) |
+| `var g: ()int = f;`, a copy of a function that the compiler can't see | the function keeps something (7.8) |
+| `f()`, a call through a variable | the function it holds touches something that a pointer still used below depends on (8.12) |
+| a call through a variable at the top level **(needs review)** | the function uses a top-level name that isn't set up yet (11.1) |
+
+---
+
+## Appendix A: The full grammar **(needs review)**
+
+This is the whole language in the notation of 3.6: `|` separates choices,
+`[ ]` holds something that can be left out, `{ }` holds something that can come any number
+of times, and words in quotes are written as they stand. The order of operations from 3.2 is
+built in: each line of `Value` is one step of that table.
+
+### A.1 Words and symbols
+
+```
+NAME    = Letter { Letter | Digit }                 (not a reserved word, 2.7)
+NUMBER  = Digit { Digit }                           (base ten)
+        | "0x" Hex { Hex }                          (base sixteen)
+        | "0b" Bit { Bit }                          (base two)
+FLOAT   = Digit { Digit } "." Digit { Digit } [ ( "e" | "E" ) [ "+" | "-" ] Digit { Digit } ]
+CHAR    = "'" ( Character | Escape ) "'"
+TEXT    = '"' { Character | Escape } '"'            (on one line, 5.10)
+Escape  = "\" ( "n" | "t" | "r" | "0" | "\" | "'" | '"' | "x" Hex Hex )
+
+Letter  = "a" to "z" | "A" to "Z" | "_"
+Digit   = "0" to "9"
+Hex     = Digit | "a" to "f" | "A" to "F"
+Bit     = "0" | "1"
+Character = any character except a line break, "\" and the quote that closes it
+```
+
+Spaces, tabs, line breaks and comments (`//` to the end of the line) can stand between any
+two of these (2.7).
+
+### A.2 The file and its statements
+
+```
+File        = { Statement }                         (the top level of the file, 11.1)
+
+Statement   = Declaration
+            | Assignment
+            | Value ";"                             (a value on its own, 2.9)
+            | "return" [ Value ] ";"                (only inside a function body, 7.1, 7.3)
+            | Block
+
+Declaration = Kind [ "@" ] NAME ":" Type "=" Value ";"      (2.1; the "@" marks a name that takes a value over, 8.9)
+Kind        = "const" | "var"
+Assignment  = [ "@" ] Behind "=" Value ";"          (the left side is a place, 2.9; with "@" it is a move, 8.9)
+Block       = "{" { Statement } "}"                 (no ";" after it, 2.9)
+```
+
+### A.3 Values
+
+```
+Value       = Or
+Or          = And { "||" And }                                          (step 7)
+And         = Compare { "&&" Compare }                                  (step 6)
+Compare     = Sum { ( "==" | "!=" | "<" | ">" | "<=" | ">=" ) Sum }     (step 5)
+Sum         = Product { ( "+" | "-" ) Product }                         (step 4)
+Product     = Front { ( "*" | "/" | "%" ) Front }                       (step 3)
+Front       = ( "!" | "-" | "^" | "&" | "@" ) Front                     (step 2: in front of a value)
+            | Behind
+Behind      = Simple { "~"                                              (step 1: behind a value)
+                     | "[" Value "]"                                    (an index or a lookup)
+                     | "[" [ Value ] ":" [ Value ] "]"                  (a slice, 5.9)
+                     | "." NAME                                         (a field, .length, .T)
+                     | "(" [ Value { "," Value } ] ")"                  (a call)
+                     }
+Simple      = NAME | NUMBER | FLOAT | CHAR | TEXT
+            | "true" | "false" | "null"
+            | "(" Value ")"                                             (a group, 3.2)
+            | ArrayValue | MapValue | StructValue | FunctionValue
+            | Type                                                      (a type is a value, 4.1)
+
+ArrayValue    = "[" [ Value { "," Value } ] "]"                         (an array, or a pair with two values, 5.8)
+MapValue      = "{" [ Entry { "," Entry } ] "}"
+Entry         = Value ":" Value                                         (a key, then its value)
+StructValue   = "{" Field { Field } "}"
+Field         = NAME ":" Type "=" Value ";"
+FunctionValue = "(" [ Param { "," Param } ] ")" Block
+Param         = Kind [ "@" ] NAME ":" Type
+```
+
+`Type`, `Return`, `TypeList`, `TypeItem`, `FieldList` and `BasicType` are in 3.6.
+
+### A.4 Telling the forms apart
+
+Some forms start with the same symbol. The compiler knows which names are types: it collects
+the top-level type names of the file before it reads anything else (4.2). "A type" below is a
+type that is written out, with type names and the forms of 3.6. With that, these rules
+always decide. One kind of name is settled only once its function's type has been read: a
+`const` parameter of type `type`, which is a type name when its function's type names it
+(4.3). A form that starts with such a name is told apart at that point:
+
+| What is read | It is |
+|---|---|
+| `&&` where a `Front` can start, or in a type | two `&` marks (3.2) |
+| `^`, `&` or `@` in front of a type | the type `^T`, `&T` or `@T`. In front of any other value it is the mark from 8.2. So a mark never puts a type on the heap or borrows one: `^int` is always a type |
+| `[n]` or `[]` straight in front of a type | an array type. Otherwise `[ … ]` is an array value |
+| `(` | a call, a function value, a function type or a group, by the table in 3.2 |
+| `(` followed by `NAME :` | a function type whose first parameter is a named type parameter, as in `(T: type)([]T)T` (4.3). The parameters of a function value start with `const` or `var` |
+| `()` followed by `{` | a function type when the braces hold fields written `name: Type`, or one type: `(){x: int, y: int}`, `(){int}bool`. Otherwise a function value with no parameters (3.2) |
+| `{` followed by `NAME : Type =` | a struct value |
+| `{` followed by a value and then a `:`, when it isn't the row above or the row below | a map value |
+| `{` followed by `NAME : Type` and then a `,` or the `}` | a struct type (3.6). Where a map of types is asked for, it is a map value instead: the place decides (3.8) |
+| `{` holding one type, with a type straight after the `}` | a map type, as in `{int}bool` (3.6) |
+| `{ }` with nothing inside, where a value is expected | a map value with no entries. Where a statement starts, it is an empty block |
+| `{` where a statement starts, when it isn't one of the rows above | a block. The `{` after a function value's parameters always starts its body |
+| a statement that starts with a value followed by `=` | an assignment. Without the `=` it is a value on its own |
+
+---
+
+## Appendix B: Every check **(needs review)**
+
+This appendix gathers every check in one place, for whoever writes the
+compiler. B.1 to B.8 are the checks the compiler makes before the program runs, each with a
+line it rejects and the section the rule comes from. B.9 is every check made while the
+program runs. The rules themselves are in the sections named.
+
+### B.1 The source, and names
+
+| The compiler rejects | Example | Rule |
+|---|---|---|
+| a character outside ASCII that isn't in a comment or a text | `var café: int = 1;` | 2.7 |
+| a number that runs into a name, or into a digit its base doesn't have | `2total`, `0b12` | 2.7, 3.2 |
+| a reserved word used as a name | `var return: int = 1;` | 2.7 |
+| a number with a decimal point that has no digit on one side | `.5`, `3.` | 3.2 |
+| an escape that doesn't exist | `'\q'` | 3.2 |
+| a `char` that isn't exactly one byte | `'ab'`, `'é'`, `''` | 3.2 |
+| a text that isn't closed on its line | `"Carl` | 5.10 |
+| a name declared where the same name can already be seen, or spelled like a top-level name | a second `var count`, a parameter or a name in a block spelled like a top-level name, `const int: type = int8;` | 2.8 |
+| a name that isn't declared | `total = 1;` with no `total` | 2.8 |
+| a name used above its declaration | `var a: int = b;` and below it `var b: int = 1;` | 2.8 |
+| a top-level call of a function the compiler sees, which reaches a top-level name that isn't set up yet, or whose note is fail safe while a name below isn't ready from the start | `const early: int = readLate();`, `const alsoEarly: int = viaHold();` | 11.1 |
+
+### B.2 Declarations and statements
+
+| The compiler rejects | Example | Rule |
+|---|---|---|
+| giving a `const` a new value | `limit = 11;` | 2.3 |
+| an assignment used as a value | `a = b = 3;` | 2.9 |
+| a left side that isn't a place | `makePoint(1, 2).x = 5;`, `3 = count;` | 2.9 |
+| assigning a length | `scores.length = 4;` | 5.5 |
+| a `return` outside a function body | `return 1;` at the top level of the file | 2.9 |
+| a function that returns a value, with a body that runs to its end without meeting a `return` | a `(int)int` whose body is only `show(1);` | 7.1 |
+| a value given back by a function that returns nothing | `return 5;` in a `()void` | 7.3 |
+| no value given back by a function that returns one | `return;` in an `(int)int` | 7.3 |
+| a call that has no value, used as a value | `var x: int = show(5);`, `return hello();` | 3.8, 7.3 |
+
+### B.3 The types of values
+
+| The compiler rejects | Example | Rule |
+|---|---|---|
+| a value whose type isn't the type its place asks for | `var count: int = small;` | 3.2, 3.8 |
+| a written number that doesn't fit its type | `var big: uint8 = 300;`, `var below: uint8 = -1;` | 3.2 |
+| a whole number written where a float is asked for, or the other way round | `var rate: float = 3;`, `var half: int = 2.5;` | 3.2 |
+| a written float that is too big for its type | `var f: float32 = 1.0e39;` | 3.2 |
+| `+ - * /` on anything but two numbers of one type | `count + small`, `'a' + 'b'` | 3.2 |
+| `%` on anything but two whole numbers of one type | `2.5 % 1.0` | 3.2 |
+| `-` in front of anything but a signed whole number or a float | `-level` for a `uint8`, `-ready` | 3.2 |
+| `&&`, `\|\|` or `!` on anything but `bool`s | `count && ready`, `!count` | 3.2 |
+| `==` or `!=` on two different types | `count == small` | 3.2, 3.7 |
+| `<`, `>`, `<=`, `>=` on anything but two numbers of one type or two `char`s | `0 < count < 10`, `ready < true` | 3.2 |
+| written numbers whose answer doesn't fit, and a number divided by a written `0` or `0.0` | `var over: int8 = 100 + 100;`, `count / 0`, `count % 0`, `price / 0.0` | 3.2 |
+| a value written on the spot with nothing to take its type from | `[]`, `{}` or `null` with no place | 3.8 |
+| a type that is called | `int(3.0)`, `Point(1, 2)` | 4.1 |
+| a type that isn't written out where it decides a type | `var m: wholeTypes[1] = 5;`, `first(x.T)`, `first(t)` | 4.2, 4.3 |
+| a name that holds a type but is not a type name, used as a type: a `var`, a `const` whose value is worked out, a `type` parameter that the function's type gives no name | `var n: t = 5;` for a `var t: type`; `const U: type = x.T;` and then `var n: U = 5;` | 4.2, 4.3 |
+| a function that would be reached again, through its own calls, with a type parameter handed a type that has its earlier type strictly inside it | `wrapMore([1]T)` inside `wrapMore` | 4.3 |
+| a type parameter handed, through a variable, a type with a type parameter strictly inside it, and a call that hands such a type to a function that hands a type parameter on through a variable, by itself or through calls the compiler sees | `pick([1]T)` for a `var` `pick` | 4.3 |
+| a type parameter handed an ownership type itself | `first(@^int)`, `wrap(@^int)` | 4.3 |
+| a `type` parameter used as a type in a function value that is written where nothing asks for a type | `(const T: type, const v: []T){ … }(int, [7, 8])` | 4.3 |
+| in a function type: a name on a parameter that isn't a type parameter, a name that nothing in the rest of the type uses, or a type parameter's name used before it is given | `(n: int)int`, `(T: type)bool`, `([]T, T: type)T` | 4.3 |
+| a function value that declares as a `var` a parameter that its type names | `(var T: type){ … }` for a `(T: type)([]T)T` | 4.3 |
+| a generic function that uses a `T` in a way not every type allows | `a + b` for two `T`s | 4.3 |
+| a conversion between two types that have none, where the compiler sees that the call runs `convert` | `convert([3]int, int)`, `convert(bool, float)` | 4.4 |
+| a plain value where an `any` is asked for, or an `any` where another type is | `describe(3);`, `double(x);` | 4.5 |
+| a name declared with a call of `wrap` that the compiler sees, given such a call for another type | `x = wrap(bool)(true);` for an `x` declared with `wrap(int)(3)` | 4.5 |
+| a type that holds itself without a pointer or a function type between | `const Bad: type = {value: int, next: Bad};` | 4.6 |
+| following something that isn't a pointer | `x~` for a plain `int` | 8.7 |
+| a `.name` on a value that has none | `count.length`, `sizes.length` for a pair | 3.8, 5.8 |
+
+### B.4 Arrays, pairs, text and maps
+
+| The compiler rejects | Example | Rule |
+|---|---|---|
+| an array size that isn't a written whole number | `[bool]int`, `[n]int` | 5.1 |
+| elements of different types in one array value | `[1, true]` | 3.8 |
+| an array value of the wrong length for a fixed array | `const wrong: [3]char = "Carl";` | 5.1, 5.10 |
+| changing an element, an entry or a field of a `const` | `primes[0] = 7;`, `pairs[1] = [0, 0];`, `origin.x = 1;` | 5.2, 6.2, 9.3 |
+| an index that isn't an `int` | `scores[small]`, `primes[true]` | 5.2 |
+| a written index out of range for a length the compiler knows, and a written index below 0 whatever the length | `primes[3]` for a `[3]int`, `scores[5]` for a name declared with 3 elements, `v~[-1]` | 5.2 |
+| a name declared with an array value written out, given an array value written out of another length | `a = [1, 2, 4, 5];` for a length of 3 | 5.3 |
+| a fixed array where an unsized one is asked for, or the other way round | `firstOf(primes)`: write `primes[:]` | 5.3 |
+| a pair looked up with anything but a `bool` | `sizes[1]` | 5.8 |
+| a pair value that doesn't have two values | `const three: ?int = [1, 2, 3];` | 5.8 |
+| written slice bounds that are out of range for a length the compiler knows, and a written start that is below 0 or after a written end, whatever the length | `&primes[0:5]`, `&v~[-1:2]`, `&v~[2:1]` | 5.9 |
+| a key written twice in a map value | `{1: true, 1: false}` | 6.1 |
+| a lookup with a key of the wrong type | `seen['a']` for an `{int}bool` | 3.8 |
+| a written value used as a key that isn't in a map declared with written keys | `seen[7]`, `seen[7] = true;` | 6.2, 6.3 |
+| such a map given a map value whose written keys are not the same | `seen = {1: false};` | 6.3 |
+
+### B.5 Functions
+
+| The compiler rejects | Example | Rule |
+|---|---|---|
+| a call of something that isn't a function | `count(1)` | 3.8 |
+| a call with the wrong number of arguments, or an argument of the wrong type | `add(1)`, `add(1, true)` | 7.2 |
+| a function value whose parameters don't match its type | `const f: (int)int = (const a: int, const b: int){ … };` | 7.1 |
+| a `return` whose value isn't the function's return type | `return true;` in an `(int)int` | 7.1 |
+| a function that uses a name declared inside the function around it, given back or stored where it lasts longer | `return (){ return x; };` | 7.8 |
+| a function given back that outlasts what was lent to its call | `var f: (int)int = adderOn(&local);` kept beyond `local` | 7.8 |
+| a function with a kept block that is stored where it outlasts the frame that holds the block. A function that keeps only one borrower, under the conditions of 7.8, has no block | `keep = makeAdder(five);` inside a function, for a top-level `keep` | 7.8 |
+| a function given back that keeps a parameter which borrows a local or a parameter of the same call | `b = &n;` for a kept parameter `b` and a parameter `n` | 7.8 |
+| a function given back that borrows a kept block which stays in this frame | `return plusFive(five);` where `plusFive` is a name of this function that keeps parameters | 7.8 |
+| a copy of a function that keeps something, where the compiler sees the function | `var again: ()int = next;`, `twice(addFive, 3)` | 7.8 |
+
+### B.6 Ownership
+
+The lines the compiler rejects for ownership are listed in 8.16, each with its reason. They
+check these rules:
+
+| The compiler checks that | Rule |
+|---|---|
+| each of `T`, `^T`, `&T` and `@T` is used only as itself: `^5` for a `^int`, `p~` for the value, `&count` for a borrower, `@p` for an ownership | 8.3, 8.4, 8.7, 8.9 |
+| a borrower, an ownership, or a value that holds one, doesn't outlive what it points at | 8.5 |
+| a `var` borrower borrows a `var`, and nothing is changed through a `const` borrower or a `const` ownership | 8.6 |
+| a `var` borrower is made only from a place that can be assigned, a value made on the spot, another borrower that isn't read-only, the result of a call that was lent nothing read-only, or `null`, wherever the compiler sees both | 8.6 |
+| a read-only borrower, or a value with one inside it, goes only into a `const`, a `const` parameter or back as a result, wherever the compiler sees both ends | 8.6 |
+| an `any`, and inside a generic function a `T`, that is read from a place that can't be assigned goes only into a `const`, a `const` parameter or back as a result, and a borrower unwrapped from a `const` `any` is a `const` borrower | 8.6 |
+| what comes in through a parameter that holds a borrower, an ownership or a function isn't put in a variable that outlasts the call | 8.5 |
+| through a pointer that came in from outside, or that was read from behind a pointer, only a borrower of a top-level name itself is stored, or what came in through a parameter of this call. Nothing is stored there that borrows or uses a name of this call, a name of a function call or a block around the function, a heap value that such a name or a top-level name owns, a pointer or a function read from an outside variable, or a kept block. A name that holds something behind a pointer doesn't outlast it, and isn't given back or moved out of the call while it holds something of this call | 8.5 |
+| a parameter is never declared with the type `@T` itself: it is declared `@x: T` | 8.13 |
+| a borrower that is given back comes from a parameter, and is a `const` borrower when what it comes from is a `const` | 8.13 |
+| both sides of a move are ownerships, and the one on the right comes from a `var` owner, not from a borrower | 8.9 |
+| `null` is given only to a `^T`, an `&T` or an `@T` | 8.10 |
+| an owner isn't changed while a pointer made by following it is still used below, and a call to a function that uses the pointer is such a use | 8.12 |
+| a call later in a statement doesn't change an owner that an earlier part of the statement followed to reach a pointer, a place or a function | 8.12 |
+| a call doesn't change or take an owner that a pointer in use followed: an argument, the function that is called, or a pointer used below. A function that is handed over counts as called, an ownership inside an argument as lent, and a function that came back as lent the same things again | 8.12, 8.13 |
+| a call counts as doing what its function does to its outside variables: changing them, giving a pointer among them a new target at the call line, and using one. That counts the functions it calls by name and the functions handed to it, and a function whose note is fail safe counts as changing, taking and following every variable outside it, also at a call by name. A call through a variable is checked while the program runs instead (B.9) | 8.12 |
+| a pointer in an outside variable is still in use when a body ends. At the first line of a body that doesn't declare it, a name of a function or a block, or a kept parameter, counts as having followed every owner that a line written inside that function or block has it follow, and so it does in the body that declares it after a call the compiler doesn't see into. A pointer in a top-level variable counts as having followed nothing at the first line of a function, and the top level checks every call it makes | 8.12 |
+| an owner reached through a pointer from outside counts as the same owner as every owner of its type that is reached through another such pointer, or that is an outside variable or lies inside one. An owner reached through a pointer that was read from behind a pointer counts as the same owner as every owner of its type, also one that the function names. An owner that a called function changes and the caller can't name counts as one reached through a pointer from outside. Two elements of one array, or two entries of one map, count as one owner unless written values tell them apart, and a pointer read out of an array, a pair or a map of pointers with an index or a key that isn't a written value counts as each pointer held there. Two owners reached from one pointer along ways that go only through owners and their fields, and differ by more than an index or a key, are two owners. Inside a generic function, a type with a `T` in it counts as the same type as every type | 8.12 |
+| an owner reached through a `var` borrower that a call gave back counts as what the call was lent, or any owner inside it | 8.13 |
+| after a call, a variable that was lent with `&` where it may be changed, and that holds a borrower, an ownership or a function, doesn't outlast the other arguments, and counts as having followed what they followed | 8.13 |
+
+### B.7 Structs
+
+| The compiler rejects | Example | Rule |
+|---|---|---|
+| a struct value that doesn't have the fields of its type: their number, their order, their names and their types | `var q: Point = { x: int = 1; };`, `var u: Point = { a: int = 1; b: int = 2; };` | 9.2 |
+| a struct of one type where another is asked for | `var box: Size = p;` for a `p` that is a `Point` | 9.1, 9.2 |
+| a field's value that uses another field of its block as a name | `var span: Span = { a: int = 1; b: int = a + 1; };` | 9.2 |
+| a function written in a struct value that uses a field as a name | `count = count + 1;` where `count` is a field: write `c~.count` | 9.6 |
+| a field name that the struct's type doesn't have | `p.z` for a `Point` | 9.1 |
+| a struct type that names a field twice | `{x: int, x: bool}` | 9.1 |
+| a field name used on a `T` or on an `any` | `v.x` for a `v` of type `T` | 4.3 |
+
+### B.8 The program
+
+| The compiler rejects | Example | Rule |
+|---|---|---|
+| a top-level `main` that isn't a `const` of type `()int` | `var main: int = 0;` | 11.1 |
+
+### B.9 Checks made while the program runs
+
+Every one of these stops the program as 11.2 says. The last column is the `REASON` in the
+error line.
+
+| Line | Fails when | Reason printed | Rule |
+|---|---|---|---|
+| `a + b`, `a - b`, `a * b`, `-a`, and `a / b` on whole numbers | the answer is outside the range of the type | `number out of range` | 3.2 |
+| `a + b`, `a - b`, `a * b`, `a / b` on floats | the answer is too big for the type | `number out of range` | 3.2 |
+| `a / b`, `a % b` | `b` is zero | `division by zero` | 3.2 |
+| `convert(int, int8)(n)` and every conversion between numbers, `bool` and `char` | the value doesn't fit the type it is converted to | `conversion out of range` | 4.4 |
+| a call of `convert` through a variable | the two types have no conversion | `no conversion between the types` | 4.4 |
+| `convert([]char, int)(t)` and every conversion from text | the text isn't written as the type asks | `text is not a value of the type` | 5.10 |
+| the same conversions | the number in the text doesn't fit the type | `conversion out of range` | 5.10 |
+| `unwrap(bool)(x)` | `x` holds another type | `unwrap of another type` | 4.5 |
+| `held = v;` for a `var` `any` | `held` holds another type than `v` | `any of another type` | 4.5 |
+| `a[i]` | `i` is below 0, or not below the length | `index out of range` | 5.2 |
+| `a[i:j]`, `&a[i:j]` | `i` is below 0 or above `j`, or `j` is above the length | `slice out of range` | 5.9 |
+| `a = b;` for unsized arrays, also through a pointer, into an element, an entry or a field, or inside an `any` | the lengths differ | `length does not match` | 5.3, 4.5 |
+| `{k1: v1, k2: v2}` with keys worked out while running | two keys are equal | `key written twice` | 6.1 |
+| `m[k]` | `k` isn't a key of `m` | `key not in map` | 6.2 |
+| `m = n;` for maps | the two don't have the same keys | `keys do not match` | 6.3 |
+| `f(&limit)`, a call through a variable that hands over something read-only: `&limit`, a read-only borrower, or a value with one inside it. Inside a generic function, a `T` counts when the type it stands for has a borrower in it, and an `any` counts when the value inside has one | the parameter it goes to is a `var` in the function that runs | `const lent to a var parameter` | 8.6 |
+| `var g: ()int = f;`, `twice(f, 3)`: a copy of a function that the compiler can't see, by itself or inside a bigger value that is copied | the function keeps something | `copy of a function that keeps parameters` | 7.8 |
+| `f()`, a call through a variable, and a call that hands over a function the compiler doesn't see | by the function's note: it changes or takes an owner that a pointer in use followed, gives a pointer in a top-level variable a new target that the caller doesn't count, or follows a pointer that may point at something gone | `call touches what a pointer depends on` | 8.12 |
+| a call through a variable at the top level, or one that hands over a function the compiler doesn't see | by the function's note, it uses a top-level name that isn't set up yet | `name used before it is set up` | 11.1 |
+| `p~`, for a heap owner, a borrower or an ownership | `p` is `null` | `null followed` | 8.10 |
+| `@q = h;`, `var @q: ^int = h;`, `take(h)`: a move or a call that takes through an ownership | the ownership is `null` | `null followed` | 8.10 |
+| `^v`, and `=` where it copies a heap owner | there is no room left on the heap | `out of heap` | 8.3 |
+| any call, and a declaration that needs more stack than is left | there is no room left on the stack | `out of stack` | 10.4 |
+| `print(t)` | the output can't be written | `output failed` | 11.3 |
+| `read()` | the input can't be read | `input failed` | 11.3 |
+| the `int` that `main` returns, and `exit(n)` | the number isn't from 0 to 255 | `conversion out of range` | 11.1, 11.3 |
+
+For some of these rows the compiler rejects the line instead when it sees the values involved,
+as their sections say: the sums of 3.2, a new value for an `any` (4.5), an index (5.2), a new
+value for an unsized array (5.3), a slice (5.9), the keys of a map value (6.1), a lookup (6.2)
+and a new value for a map (6.3). Every other check in this table is always made while the
+program runs. That goes for a conversion and an `unwrap` too: each is written out, so the line
+where it can fail is in view. `convert(int, int8)(300)` is accepted, and fails when it runs
+(4.4).
+
+Two kinds of mistake are caught neither by the compiler nor by a check while running, and
+8.17 lists them. One is following a pointer, or calling a function, that lies behind a
+pointer, after what it points at or keeps is gone, or has gone to another owner. The other is
+a copy, a move or a `return` of a value whose borrowers point back into itself, where the
+compiler can't see them: the borrowers still point at the old place.
